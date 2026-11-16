@@ -1,5 +1,6 @@
 appId: com.sushirolls.pos
 productName: SUSHI ROLLS
+afterPack: build/afterPack.js
 copyright: SUSHI ROLLS
 directories:
   buildResources: build
@@ -19,7 +20,6 @@ win:
     - target: nsis
       arch: [x64]
   icon: build/icon.ico
-  publisherName: Osama
   artifactName: SUSHI-ROLLS-Setup-${version}.${ext}
 nsis:
   oneClick: false
