@@ -8,7 +8,8 @@ import type {
   PrintResult,
   SaveFileArgs,
   SaveResult,
-  SushiApi
+  SushiApi,
+  UpdateStatus
 } from '@shared/ipc'
 
 const api: SushiApi = {
@@ -29,6 +30,14 @@ const api: SushiApi = {
     version: () => ipcRenderer.invoke('app:version') as Promise<string>,
     openKds: () => ipcRenderer.invoke('app:open-kds') as Promise<{ ok: boolean }>,
     openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url) as Promise<{ ok: boolean }>
+  },
+  updates: {
+    state: () => ipcRenderer.invoke('updates:state') as Promise<UpdateStatus>,
+    check: () => ipcRenderer.invoke('updates:check') as Promise<UpdateStatus>,
+    install: () => ipcRenderer.invoke('updates:install') as Promise<{ ok: boolean; error?: string }>,
+    onStatus: (callback: (status: UpdateStatus) => void) => {
+      ipcRenderer.on('updates:status', (_event, status: UpdateStatus) => callback(status))
+    }
   }
 }
 

@@ -35,6 +35,7 @@ import { initials } from '@/lib/format'
 import { logoDataUrl } from '@/lib/logo'
 import { SHIFT_EVENT } from '@/lib/shift'
 import { AuroraField } from './AuroraField'
+import { UpdateBanner } from './UpdateBanner'
 
 interface NavItem {
   to: string
@@ -311,6 +312,8 @@ export function AppShell(): JSX.Element {
             )}
           </div>
         </header>
+
+        <UpdateBanner />
 
         <main className="scroll-area relative flex-1 px-3 pb-6 pt-3 lg:px-5">
           <div key={location.pathname} className="relative animate-fadeUp">

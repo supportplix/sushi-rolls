@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, Menu, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, Menu, shell, Notification } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { join } from 'path'
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
@@ -11,7 +11,8 @@ import type {
   PrintReceiptArgs,
   PrintResult,
   SaveFileArgs,
-  SaveResult
+  SaveResult,
+  UpdateStatus
 } from '@shared/ipc'
 
 const isDev = !!process.env['ELECTRON_RENDERER_URL']
@@ -310,38 +311,74 @@ ipcMain.handle('app:open-external', (_e, url: unknown): { ok: boolean } => {
   return { ok: false }
 })
 
+let updateStatus: UpdateStatus = { state: 'idle', currentVersion: '' }
+
+function setUpdateStatus(next: Partial<UpdateStatus>): void {
+  updateStatus = { ...updateStatus, ...next, currentVersion: app.getVersion() }
+  const win = mainWindow
+  if (win && !win.isDestroyed()) win.webContents.send('updates:status', updateStatus)
+}
+
+function checkForUpdates(): void {
+  if (!app.isPackaged) {
+    setUpdateStatus({ state: 'dev' })
+    return
+  }
+  if (updateStatus.state === 'downloading' || updateStatus.state === 'downloaded') return
+  setUpdateStatus({ state: 'checking' })
+  void autoUpdater.checkForUpdates().catch((err) => {
+    console.error('[updates] check failed', err?.message ?? err)
+    setUpdateStatus({ state: 'error' })
+  })
+}
+
 function setupAutoUpdates(): void {
+  setUpdateStatus({ state: app.isPackaged ? 'idle' : 'dev' })
   if (!app.isPackaged) return
   autoUpdater.autoDownload = true
   autoUpdater.autoInstallOnAppQuit = true
+  autoUpdater.on('checking-for-update', () => setUpdateStatus({ state: 'checking' }))
+  autoUpdater.on('update-available', (info) => setUpdateStatus({ state: 'available', version: info.version }))
+  autoUpdater.on('download-progress', (p) => setUpdateStatus({ state: 'downloading', percent: Math.round(p.percent) }))
+  autoUpdater.on('update-not-available', () => setUpdateStatus({ state: 'up-to-date' }))
   autoUpdater.on('update-downloaded', (info) => {
-    const options: Electron.MessageBoxOptions = {
-      type: 'info',
-      title: 'تحديث جديد',
-      message: `تم تنزيل تحديث جديد (${info.version}).`,
-      detail: 'أعد تشغيل التطبيق الآن لتطبيق التحديث.',
-      buttons: ['إعادة التشغيل الآن', 'لاحقًا'],
-      defaultId: 0,
-      cancelId: 1,
-      noLink: true
+    setUpdateStatus({ state: 'downloaded', version: info.version, percent: 100 })
+    if (Notification.isSupported()) {
+      const notification = new Notification({
+        title: 'تحديث SUSHI ROLLS جاهز',
+        body: `تم تنزيل الإصدار ${info.version} — أعد تشغيل التطبيق للتثبيت.`,
+        icon: existsSync(resourcePath('icon.png')) ? resourcePath('icon.png') : undefined
+      })
+      notification.on('click', () => {
+        const win = activeWindow()
+        if (win) {
+          if (win.isMinimized()) win.restore()
+          win.show()
+          win.focus()
+        }
+      })
+      notification.show()
     }
-    const win = activeWindow()
-    const prompt = win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options)
-    void prompt.then(({ response }) => {
-      if (response === 0) autoUpdater.quitAndInstall()
-    })
   })
   autoUpdater.on('error', (err) => {
     console.error('[updates]', err?.message ?? err)
+    setUpdateStatus({ state: 'error' })
   })
-  const check = (): void => {
-    void autoUpdater.checkForUpdates().catch((err) => {
-      console.error('[updates] check failed', err?.message ?? err)
-    })
-  }
-  setTimeout(check, 6000)
-  setInterval(check, 4 * 60 * 60 * 1000)
+  setTimeout(checkForUpdates, 6000)
+  setInterval(checkForUpdates, 4 * 60 * 60 * 1000)
 }
+
+ipcMain.handle('updates:state', (): UpdateStatus => updateStatus)
+ipcMain.handle('updates:check', (): UpdateStatus => {
+  checkForUpdates()
+  return updateStatus
+})
+ipcMain.handle('updates:install', (): { ok: boolean; error?: string } => {
+  if (!app.isPackaged) return { ok: false, error: 'DEV' }
+  if (updateStatus.state !== 'downloaded') return { ok: false, error: 'NOT_READY' }
+  setImmediate(() => autoUpdater.quitAndInstall())
+  return { ok: true }
+})
 
 const gotLock = app.requestSingleInstanceLock()
 if (!gotLock) {

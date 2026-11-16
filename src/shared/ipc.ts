@@ -48,6 +48,23 @@ export interface OpenResult {
   error?: string
 }
 
+export type UpdateState =
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'downloading'
+  | 'downloaded'
+  | 'up-to-date'
+  | 'error'
+  | 'dev'
+
+export interface UpdateStatus {
+  state: UpdateState
+  currentVersion: string
+  version?: string
+  percent?: number
+}
+
 export interface SushiApi {
   config: {
     get: () => Promise<AppConfig | null>
@@ -66,5 +83,11 @@ export interface SushiApi {
     version: () => Promise<string>
     openKds: () => Promise<{ ok: boolean }>
     openExternal: (url: string) => Promise<{ ok: boolean }>
+  }
+  updates: {
+    state: () => Promise<UpdateStatus>
+    check: () => Promise<UpdateStatus>
+    install: () => Promise<{ ok: boolean; error?: string }>
+    onStatus: (callback: (status: UpdateStatus) => void) => void
   }
 }

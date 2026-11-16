@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
+  AlertCircle,
   Building2,
+  CheckCircle2,
   DownloadCloud,
+  Github,
   HardDriveDownload,
   Info,
   Loader2,
   Printer,
   ReceiptText,
+  RefreshCw,
   Save,
   ServerCog,
   Timer,
@@ -31,6 +35,7 @@ import { useToast } from '@/components/ui/toast'
 import { logoDataUrl } from '@/lib/logo'
 import { exportBackup, importBackup } from '@/lib/backup'
 import { useAsync } from '@/lib/hooks'
+import { checkForUpdates, installUpdate, useUpdateStatus } from '@/lib/updates'
 
 type Tab = 'restaurant' | 'tax' | 'receipt' | 'printing' | 'session' | 'backup' | 'about'
 
@@ -282,15 +287,39 @@ export default function SettingsPage(): JSX.Element {
       )}
 
       {tab === 'about' && (
-        <SectionCard title={t('settings.about')}>
-          <div className="flex max-w-2xl flex-col gap-4 sm:flex-row sm:items-center">
-            <LogoPreview />
-            <div className="space-y-1 text-xs text-txt-dim">
-              <div className="text-sm font-black">SUSHI ROLLS</div>
-              <div>{t('settings.version')}: {version || '—'}</div>
+        <div className="grid gap-3 lg:grid-cols-[1.05fr_1fr] lg:items-start">
+          <SectionCard bodyClassName="p-0">
+            <div className="relative flex flex-col items-center overflow-hidden px-6 py-8 text-center">
+              <div
+                aria-hidden
+                className="pointer-events-none absolute inset-x-10 top-0 h-px bg-gradient-to-l from-transparent via-brand-gold/60 to-transparent"
+              />
+              <LogoPreview />
+              <div className="mt-4">
+                <div className="text-lg font-black tracking-tight">SUSHI ROLLS</div>
+                <div className="mt-0.5 text-[11px] font-semibold text-txt-faint">{t('app.tagline')}</div>
+              </div>
+              <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-white/[0.06] bg-white/[0.03] px-3 py-1.5 text-[10.5px] font-semibold text-txt-dim">
+                {t('updates.current')}
+                <span className="font-black text-brand-gold">v{version || '—'}</span>
+              </div>
+              <div className="mt-4 flex items-center gap-2 text-xs text-txt-dim">
+                <span className="text-txt-faint">{t('updates.developer')}</span>
+                <span className="font-black text-txt">{t('updates.developerName')}</span>
+              </div>
+              <div className="mt-1 text-[10px] text-txt-faint">{t('updates.copyright')}</div>
+              <button
+                type="button"
+                onClick={() => void api.app.openExternal('https://github.com/supportplix/sushi-rolls')}
+                className="mt-4 inline-flex items-center gap-1.5 rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-1.5 text-[10.5px] font-semibold text-txt-faint transition hover:border-brand-gold/30 hover:text-brand-gold"
+              >
+                <Github className="h-3.5 w-3.5" />
+                {t('updates.github')}
+              </button>
             </div>
-          </div>
-        </SectionCard>
+          </SectionCard>
+          <UpdatePanel version={version} />
+        </div>
       )}
 
       <ConfirmDialog
@@ -328,5 +357,96 @@ function LogoPreview(): JSX.Element {
     <div className="grid h-20 w-20 place-items-center rounded-2xl border border-line bg-ink-800/60 p-2">
       {logo ? <img src={logo} alt="SUSHI ROLLS" className="h-full w-full object-contain" /> : <HardDriveDownload className="h-6 w-6 text-txt-faint" />}
     </div>
+  )
+}
+
+function UpdatePanel({ version }: { version: string }): JSX.Element {
+  const update = useUpdateStatus()
+  const toast = useToast()
+  const percent = Math.max(0, Math.min(100, update.percent ?? 0))
+  const displayVersion = version || update.currentVersion || '—'
+  const checking = update.state === 'checking'
+  const downloading = update.state === 'downloading' || update.state === 'available'
+  const downloaded = update.state === 'downloaded'
+
+  const statuses = {
+    idle: { icon: <RefreshCw className="h-4 w-4" />, tone: 'dim', title: t('updates.idleTitle'), hint: t('updates.idleHint') },
+    dev: { icon: <Info className="h-4 w-4" />, tone: 'dim', title: t('updates.dev'), hint: t('updates.devHint') },
+    checking: { icon: <Loader2 className="h-4 w-4 animate-spin" />, tone: 'gold', title: t('updates.checking'), hint: t('updates.checkingHint') },
+    available: { icon: <DownloadCloud className="h-4 w-4" />, tone: 'gold', title: t('updates.available'), hint: t('updates.availableHint') },
+    downloading: { icon: <DownloadCloud className="h-4 w-4" />, tone: 'gold', title: t('updates.downloading'), hint: t('updates.downloadingHint') },
+    downloaded: { icon: <CheckCircle2 className="h-4 w-4" />, tone: 'green', title: t('updates.readyTitle'), hint: t('updates.readyHint') },
+    'up-to-date': { icon: <CheckCircle2 className="h-4 w-4" />, tone: 'green', title: t('updates.upToDate'), hint: t('updates.upToDateHint') },
+    error: { icon: <AlertCircle className="h-4 w-4" />, tone: 'red', title: t('updates.error'), hint: t('updates.errorHint') }
+  }
+  const current = statuses[update.state]
+  const tone =
+    current.tone === 'green'
+      ? 'border-emerald-400/20 bg-emerald-500/[0.08] text-emerald-400'
+      : current.tone === 'gold'
+        ? 'border-brand-gold/25 bg-brand-gold/[0.08] text-brand-gold'
+        : current.tone === 'red'
+          ? 'border-brand-red/[0.3] bg-brand-red/[0.1] text-brand-redSoft'
+          : 'border-white/[0.06] bg-white/[0.03] text-txt-dim'
+
+  const check = async (): Promise<void> => {
+    const next = await checkForUpdates()
+    if (next.state === 'dev') toast.info(t('updates.devHint'))
+    else if (next.state === 'error') toast.error(t('updates.error'))
+  }
+
+  const restart = async (): Promise<void> => {
+    const res = await installUpdate()
+    if (!res.ok) toast.info(t('updates.notReady'))
+  }
+
+  return (
+    <SectionCard title={t('updates.title')} subtitle={t('updates.subtitle')} bodyClassName="p-4">
+      <div className="space-y-4">
+        <div className="flex items-start gap-3 rounded-2xl border border-white/[0.06] bg-white/[0.025] p-4">
+          <span className={cn('grid h-10 w-10 shrink-0 place-items-center rounded-xl border', tone)}>{current.icon}</span>
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-bold">{current.title}</div>
+            <div className="mt-0.5 text-[11px] leading-relaxed text-txt-faint">{current.hint}</div>
+            {downloading && (
+              <div className="mt-3">
+                <div className="mb-1 flex items-center justify-between text-[10px] text-txt-faint">
+                  <span>{update.version ? `v${update.version}` : ''}</span>
+                  <span>{percent}%</span>
+                </div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
+                  <div className="h-full rounded-full bg-brand-gold transition-all duration-500" style={{ width: `${Math.max(2, percent)}%` }} />
+                </div>
+              </div>
+            )}
+            {downloaded && update.version && (
+              <div className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-emerald-400/20 bg-emerald-500/[0.08] px-2.5 py-1 text-[10px] font-bold text-emerald-400">
+                v{update.version}
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          {downloaded ? (
+            <Button variant="gold" icon={<RefreshCw className="h-4 w-4" />} onClick={() => void restart()}>
+              {t('updates.restart')}
+            </Button>
+          ) : (
+            <Button
+              variant="ghost"
+              icon={checking ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+              disabled={checking || downloading}
+              onClick={() => void check()}
+            >
+              {checking ? t('updates.checking') : update.state === 'error' ? t('updates.retry') : t('updates.check')}
+            </Button>
+          )}
+        </div>
+        <div className="flex items-center justify-between border-t border-white/[0.06] pt-3 text-[10px] text-txt-faint">
+          <span>{t('updates.channel')}</span>
+          <span className="font-semibold text-txt-dim">{t('updates.current')} · v{displayVersion}</span>
+        </div>
+      </div>
+    </SectionCard>
   )
 }

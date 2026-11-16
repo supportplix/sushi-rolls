@@ -52,6 +52,12 @@ function webFallback(): SushiApi {
         window.open(url, '_blank')
         return { ok: true }
       }
+    },
+    updates: {
+      state: async () => ({ state: 'dev', currentVersion: 'web' }),
+      check: async () => ({ state: 'dev', currentVersion: 'web' }),
+      install: async () => ({ ok: false, error: NO_ELECTRON }),
+      onStatus: () => undefined
     }
   }
 }
