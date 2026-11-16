@@ -1,0 +1,2 @@
+ManifestDPIAware true
+ManifestDPIAwareness PerMonitorV2

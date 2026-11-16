@@ -4,7 +4,6 @@ import {
   Building2,
   CheckCircle2,
   DownloadCloud,
-  Github,
   HardDriveDownload,
   Info,
   Loader2,
@@ -308,14 +307,6 @@ export default function SettingsPage(): JSX.Element {
                 <span className="font-black text-txt">{t('updates.developerName')}</span>
               </div>
               <div className="mt-1 text-[10px] text-txt-faint">{t('updates.copyright')}</div>
-              <button
-                type="button"
-                onClick={() => void api.app.openExternal('https://github.com/supportplix/sushi-rolls')}
-                className="mt-4 inline-flex items-center gap-1.5 rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-1.5 text-[10.5px] font-semibold text-txt-faint transition hover:border-brand-gold/30 hover:text-brand-gold"
-              >
-                <Github className="h-3.5 w-3.5" />
-                {t('updates.github')}
-              </button>
             </div>
           </SectionCard>
           <UpdatePanel version={version} />

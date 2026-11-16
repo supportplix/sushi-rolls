@@ -3,7 +3,7 @@
   "version": "1.0.2",
   "private": true,
   "description": "SUSHI ROLLS — Premium Restaurant Management & POS",
-  "author": "SUSHI ROLLS",
+  "author": "Osama",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",

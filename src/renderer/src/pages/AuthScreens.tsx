@@ -171,7 +171,7 @@ export function Login(): JSX.Element {
                   type="button"
                   onClick={() => setShow((v) => !v)}
                   aria-label={show ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
-                  className="absolute end-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-txt-faint transition hover:bg-white/[0.06] hover:text-txt"
+                  className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-lg text-txt-faint transition hover:bg-white/[0.06] hover:text-txt"
                 >
                   {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </button>

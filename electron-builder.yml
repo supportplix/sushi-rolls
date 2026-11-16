@@ -19,6 +19,7 @@ win:
     - target: nsis
       arch: [x64]
   icon: build/icon.ico
+  publisherName: Osama
   artifactName: SUSHI-ROLLS-Setup-${version}.${ext}
 nsis:
   oneClick: false
@@ -27,6 +28,7 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: SUSHI ROLLS
+  include: build/installer.nsh
   installerIcon: build/icon.ico
   uninstallerIcon: build/icon.ico
   installerHeader: build/installerHeader.bmp
