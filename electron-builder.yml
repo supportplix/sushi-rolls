@@ -1,0 +1,32 @@
+appId: com.sushirolls.pos
+productName: SUSHI ROLLS
+copyright: SUSHI ROLLS
+directories:
+  buildResources: build
+files:
+  - out/**
+  - resources/**
+  - package.json
+asarUnpack:
+  - resources/**
+publish:
+  provider: github
+  owner: supportplix
+  repo: sushi-rolls
+  releaseType: release
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  icon: build/icon.ico
+  artifactName: SUSHI-ROLLS-Setup-${version}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: SUSHI ROLLS
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  deleteAppDataOnUninstall: false

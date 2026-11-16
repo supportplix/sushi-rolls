@@ -1,0 +1,300 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@font-face {
+  font-family: 'Cairo';
+  font-style: normal;
+  font-weight: 200 1000;
+  font-display: swap;
+  src: url('./assets/fonts/cairo-arabic.woff2') format('woff2');
+  unicode-range: U+0600-06FF, U+0750-077F, U+0870-0891, U+0897-08E1, U+08E3-08FF, U+200C-200E,
+    U+2010-2011, U+204F, U+2E41, U+FB50-FDFF, U+FE70-FE74, U+FE76-FEFC;
+}
+
+@font-face {
+  font-family: 'Cairo';
+  font-style: normal;
+  font-weight: 200 1000;
+  font-display: swap;
+  src: url('./assets/fonts/cairo-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+    U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+:root {
+  color-scheme: dark;
+  --aurora-red: rgba(229, 14, 5, 0.13);
+  --aurora-gold: rgba(228, 190, 84, 0.09);
+  --aurora-deep: rgba(150, 10, 4, 0.1);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-ink text-txt font-sans antialiased;
+  overflow: hidden;
+  background: #060607;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.26);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:active {
+  background: rgba(228, 190, 84, 0.45);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+textarea::-webkit-scrollbar,
+pre::-webkit-scrollbar,
+.select-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::selection {
+  background: #e50e05;
+  color: #fff;
+}
+
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type='search']::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+}
+
+@layer components {
+  .card {
+    @apply relative rounded-panel border border-white/[0.065] bg-[#0C0D10]/[0.88] shadow-card;
+  }
+
+  .card-pad {
+    @apply p-5;
+  }
+
+  .label {
+    @apply block text-[11.5px] font-semibold tracking-wide text-txt-dim mb-1.5;
+  }
+
+  .input {
+    @apply w-full rounded-xl border border-white/[0.08] bg-white/[0.035] px-3.5 py-2.5 text-sm text-txt
+      placeholder:text-txt-faint outline-none transition
+      hover:border-white/[0.12]
+      focus:border-brand-red/60 focus:bg-white/[0.055] focus:ring-4 focus:ring-brand-red/10;
+  }
+
+  .input:disabled {
+    @apply opacity-50;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl text-sm font-semibold
+      transition select-none whitespace-nowrap disabled:opacity-45 disabled:pointer-events-none;
+  }
+
+  .btn-md {
+    @apply h-10 px-4;
+  }
+
+  .btn-sm {
+    @apply h-8 px-3 text-xs rounded-lg;
+  }
+
+  .btn-lg {
+    @apply h-12 px-6 text-base rounded-xl;
+  }
+
+  .btn-primary {
+    @apply bg-gradient-to-l from-brand-red via-[#D00C04] to-[#B00B04] text-white
+      shadow-[0_10px_30px_rgba(229,14,5,0.28)] hover:brightness-110 active:scale-[0.99];
+  }
+
+  .btn-gold {
+    @apply bg-gradient-to-l from-brand-gold to-brand-goldDeep text-ink shadow-gold hover:brightness-110 active:scale-[0.99];
+  }
+
+  .btn-ghost {
+    @apply border border-white/[0.12] bg-white/[0.06] text-txt backdrop-blur-md
+      hover:bg-white/[0.1] hover:border-white/[0.18];
+  }
+
+  .btn-danger-ghost {
+    @apply border border-brand-red/30 bg-brand-red/10 text-brand-redSoft hover:bg-brand-red/20;
+  }
+
+  .table-base {
+    @apply w-full text-sm;
+  }
+
+  .table-base thead th {
+    @apply text-start text-[10.5px] font-bold uppercase tracking-[0.08em] text-txt-faint
+      px-3.5 py-3 border-b border-white/[0.07] whitespace-nowrap;
+  }
+
+  .table-base tbody td {
+    @apply px-3.5 py-3 border-b border-white/[0.045] text-txt align-middle;
+  }
+
+  .table-base tbody tr {
+    @apply transition-colors hover:bg-white/[0.035];
+  }
+
+  .table-base tbody tr:last-child td {
+    @apply border-b-0;
+  }
+
+  .kpi-value {
+    @apply text-[27px] leading-8 font-black tracking-tight tabular-nums;
+  }
+
+  .page-title {
+    @apply text-[26px] leading-8 font-black tracking-tight;
+  }
+
+  .page-sub {
+    @apply text-xs text-txt-dim mt-1;
+  }
+
+  .divider {
+    @apply h-px bg-white/[0.06];
+  }
+
+  .scroll-area {
+    @apply overflow-y-auto overscroll-contain;
+  }
+}
+
+/* ---------- Aurora field ---------- */
+.aurora-field {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  z-index: 0;
+}
+
+.aurora-blob {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(80px);
+}
+
+.aurora-a {
+  width: 62vw;
+  height: 62vw;
+  right: -18vw;
+  top: -26vh;
+  background: radial-gradient(circle at center, var(--aurora-red), transparent 66%);
+}
+
+.aurora-b {
+  width: 52vw;
+  height: 52vw;
+  left: -20vw;
+  bottom: -28vh;
+  background: radial-gradient(circle at center, var(--aurora-gold), transparent 66%);
+}
+
+.aurora-c {
+  width: 42vw;
+  height: 42vw;
+  left: 22vw;
+  top: 30vh;
+  background: radial-gradient(circle at center, var(--aurora-deep), transparent 68%);
+}
+
+.aurora-grain {
+  position: absolute;
+  inset: 0;
+  opacity: 0.35;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+  background-size: 3px 3px;
+  mix-blend-mode: overlay;
+}
+
+.aurora-field::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse 72% 62% at 52% 42%, transparent 0%, rgba(6, 6, 7, 0.5) 78%);
+}
+
+@keyframes marquee {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.belt-marquee .belt-track {
+  animation: marquee 38s linear infinite;
+}
+
+.belt-marquee:hover .belt-track {
+  animation-play-state: paused;
+}
+
+/* ---------- Shell utilities ---------- */
+.app-drag {
+  -webkit-app-region: drag;
+}
+
+.app-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  scrollbar-width: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .belt-marquee .belt-track {
+    animation: none;
+  }
+  .animate-fadeUp,
+  .animate-pop {
+    animation: none !important;
+  }
+}
