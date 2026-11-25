@@ -9,7 +9,10 @@ import type {
   SaveFileArgs,
   SaveResult,
   SushiApi,
-  UpdateStatus
+  UpdateStatus,
+  ZkTecoServiceResult,
+  ZkTecoStatus,
+  ZkTecoConfigureArgs
 } from '@shared/ipc'
 
 const api: SushiApi = {
@@ -30,6 +33,15 @@ const api: SushiApi = {
     version: () => ipcRenderer.invoke('app:version') as Promise<string>,
     openKds: () => ipcRenderer.invoke('app:open-kds') as Promise<{ ok: boolean }>,
     openExternal: (url: string) => ipcRenderer.invoke('app:open-external', url) as Promise<{ ok: boolean }>
+  },
+  zkteco: {
+    status: () => ipcRenderer.invoke('zkteco:status') as Promise<ZkTecoStatus>,
+    health: () => ipcRenderer.invoke('zkteco:health') as Promise<ZkTecoStatus>,
+    configure: (args: ZkTecoConfigureArgs) => ipcRenderer.invoke('zkteco:configure', args) as Promise<ZkTecoServiceResult>,
+    service: (args) => ipcRenderer.invoke('zkteco:service', args) as Promise<ZkTecoServiceResult>,
+    onStatus: (callback) => {
+      ipcRenderer.on('zkteco:status', (_event, status: ZkTecoStatus) => callback(status))
+    }
   },
   updates: {
     state: () => ipcRenderer.invoke('updates:state') as Promise<UpdateStatus>,

@@ -33,3 +33,6 @@ file_size_limit = "50MiB"
 
 [functions.admin-users]
 verify_jwt = true
+
+[functions.device-sync]
+verify_jwt = false

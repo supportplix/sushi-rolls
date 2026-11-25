@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import { CalendarCheck, Clock4, Link2, Loader2, LogIn, LogOut, Pencil, Plus, RefreshCw, Trash2, Users } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { CalendarCheck, Clock4, Fingerprint, Link2, Loader2, LogIn, LogOut, Pencil, Plus, RefreshCw, Trash2, UserRoundCheck, Users } from 'lucide-react'
 import { useAuth, useDb } from '@/lib/auth'
 import { useAsync } from '@/lib/hooks'
 import { humanError } from '@/lib/errors'
@@ -24,6 +24,15 @@ import {
 import { DatePicker } from '@/components/ui/datepicker'
 import { Dialog, ConfirmDialog } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/toast'
+import {
+  enqueueEmployeeCommand,
+  deleteEmployeeWithDevice,
+  listCommands,
+  listEmployeeDevices,
+  startEnrollment,
+  type DeviceCommand,
+  type EmployeeDevice
+} from '@/lib/zkteco'
 
 export default function EmployeesPage(): JSX.Element {
   const db = useDb()
@@ -44,6 +53,7 @@ export default function EmployeesPage(): JSX.Element {
   })
   const [saving, setSaving] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [zkBusy, setZkBusy] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Employee | null>(null)
 
   const list = useAsync(async () => {
@@ -56,6 +66,25 @@ export default function EmployeesPage(): JSX.Element {
     const { data } = await db.from('profiles').select('*').eq('is_active', true).order('full_name')
     return (data ?? []) as Profile[]
   }, [db])
+
+  const employeeDevices = useAsync(async () => {
+    if (!manage) return [] as EmployeeDevice[]
+    return listEmployeeDevices(db)
+  }, [db, manage])
+
+  const commands = useAsync(async () => {
+    if (!manage) return [] as DeviceCommand[]
+    return listCommands(db)
+  }, [db, manage])
+
+  useEffect(() => {
+    if (!manage) return
+    const timer = window.setInterval(() => {
+      void employeeDevices.reload()
+      void commands.reload()
+    }, 3000)
+    return () => window.clearInterval(timer)
+  }, [manage, employeeDevices, commands])
 
   const today = toISODate(new Date())
   const attendance = useAsync(async () => {
@@ -77,6 +106,14 @@ export default function EmployeesPage(): JSX.Element {
     if (error) throw error
     return (data ?? []) as Attendance[]
   }, [db])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void attendance.reload()
+      void history.reload()
+    }, 5000)
+    return () => window.clearInterval(timer)
+  }, [attendance, history])
 
   const myEmployee = useMemo(
     () => (list.data ?? []).find((e) => e.profile_id === profile?.id),
@@ -122,6 +159,35 @@ export default function EmployeesPage(): JSX.Element {
     }
   }
 
+  const zkStatus = (employeeId: string): { label: string; color: string } => {
+    const pending = (commands.data ?? []).find((c) => c.employee_id === employeeId && (c.status === 'pending' || c.status === 'processing'))
+    if (pending) return { label: pending.type === 'start_enrollment' ? 'في انتظار البصمة' : 'جارٍ التجهيز', color: '#E4BE54' }
+    const mapping = (employeeDevices.data ?? []).find((item) => item.employee_id === employeeId)
+    if (!mapping) return { label: 'غير مسجل', color: '#6B7176' }
+    if (mapping.enrollment_status === 'enrolled') return { label: 'بصمة مسجلة', color: '#3DBE7A' }
+    if (mapping.enrollment_status === 'disabled') return { label: 'معطّل على الجهاز', color: '#6B7176' }
+    if (mapping.enrollment_status === 'failed') return { label: 'فشل التسجيل', color: '#E36B6B' }
+    return { label: 'بانتظار التسجيل', color: '#E4BE54' }
+  }
+
+  const runZk = async (
+    employeeId: string,
+    action: 'enroll' | 'disable'
+  ): Promise<void> => {
+    setZkBusy(employeeId)
+    try {
+      if (action === 'enroll') await startEnrollment(db, employeeId)
+      else await enqueueEmployeeCommand(db, employeeId, 'delete_user', `disable-${employeeId}-${Date.now()}`)
+      toast.success(action === 'enroll' ? 'تم إرسال أمر تسجيل البصمة' : 'تم إرسال أمر الحذف من الجهاز')
+      void employeeDevices.reload()
+      void commands.reload()
+    } catch (err) {
+      toast.error(humanError(err))
+    } finally {
+      setZkBusy(null)
+    }
+  }
+
   const save = async (): Promise<void> => {
     if (!form.full_name.trim()) return
     setSaving(true)
@@ -135,12 +201,22 @@ export default function EmployeesPage(): JSX.Element {
         profile_id: form.profile_id || null,
         is_active: form.is_active
       }
+      let employeeId = form.id
       if (form.id) {
         const { error } = await db.from('employees').update(payload).eq('id', form.id)
         if (error) throw error
       } else {
-        const { error } = await db.from('employees').insert(payload)
+        const { data, error } = await db.from('employees').insert(payload).select('id').single()
         if (error) throw error
+        employeeId = data.id as string
+      }
+      if (employeeId && manage) {
+        try {
+          if (form.id) await enqueueEmployeeCommand(db, employeeId, 'update_user', `update-${employeeId}-${Date.now()}`)
+          else await startEnrollment(db, employeeId)
+        } catch (zkError) {
+          toast.error(`تم حفظ الموظف، لكن تعذر تجهيز البصمة: ${humanError(zkError)}`)
+        }
       }
       toast.success(t('employees.added'))
       setOpen(false)
@@ -243,6 +319,7 @@ export default function EmployeesPage(): JSX.Element {
                   {manage && <th>{t('employees.salary')}</th>}
                   <th>{t('employees.hireDate')}</th>
                   <th>{t('common.status')}</th>
+                  {manage && <th>البصمة</th>}
                   <th className="w-10"></th>
                 </tr>
               </thead>
@@ -264,6 +341,11 @@ export default function EmployeesPage(): JSX.Element {
                         {e.is_active ? t('common.active') : t('common.inactive')}
                       </Badge>
                     </td>
+                    {manage && (
+                      <td>
+                        <Badge color={zkStatus(e.id).color}>{zkStatus(e.id).label}</Badge>
+                      </td>
+                    )}
                     <td>
                       {manage && (
                         <RowMenu
@@ -286,6 +368,19 @@ export default function EmployeesPage(): JSX.Element {
                               }
                             },
                             {
+                              label: zkStatus(e.id).label === 'بصمة مسجلة' ? 'إعادة تسجيل البصمة' : 'تسجيل البصمة',
+                              icon: <Fingerprint className="h-3.5 w-3.5" />,
+                              disabled: zkBusy === e.id,
+                              onClick: () => void runZk(e.id, 'enroll')
+                            },
+                            {
+                              label: 'حذف من الجهاز',
+                              icon: <UserRoundCheck className="h-3.5 w-3.5" />,
+                              danger: true,
+                              disabled: zkBusy === e.id,
+                              onClick: () => void runZk(e.id, 'disable')
+                            },
+                            {
                               label: t('common.delete'),
                               icon: <Trash2 className="h-3.5 w-3.5" />,
                               danger: true,
@@ -299,7 +394,7 @@ export default function EmployeesPage(): JSX.Element {
                 ))}
                 {(list.data ?? []).length === 0 && (
                   <tr>
-                    <td colSpan={manage ? 7 : 6} className="py-10 text-center text-xs text-txt-faint">
+                    <td colSpan={manage ? 8 : 7} className="py-10 text-center text-xs text-txt-faint">
                       {t('common.empty')}
                     </td>
                   </tr>
@@ -323,6 +418,7 @@ export default function EmployeesPage(): JSX.Element {
                   <th>{t('employees.checkIn')}</th>
                   <th>{t('employees.checkOut')}</th>
                   <th>{t('employees.totalHours')}</th>
+                  <th>المصدر</th>
                 </tr>
               </thead>
               <tbody>
@@ -333,11 +429,12 @@ export default function EmployeesPage(): JSX.Element {
                     <td className="text-xs">{fmtDateTime(a.check_in)}</td>
                     <td className="text-xs">{a.check_out ? fmtDateTime(a.check_out) : <Badge color="#E4BE54">مفتوح</Badge>}</td>
                     <td className="text-xs font-bold">{hours(a)}</td>
+                    <td><Badge color={a.source === 'device' ? '#3DBE7A' : '#6B7176'}>{a.source === 'device' ? 'بصمة LX15' : 'يدوي'}</Badge></td>
                   </tr>
                 ))}
                 {(history.data ?? []).length === 0 && (
                   <tr>
-                    <td colSpan={5} className="py-10 text-center text-xs text-txt-faint">
+                    <td colSpan={6} className="py-10 text-center text-xs text-txt-faint">
                       {t('employees.noAttendance')}
                     </td>
                   </tr>
@@ -403,8 +500,7 @@ export default function EmployeesPage(): JSX.Element {
         onConfirm={async () => {
           if (!deleteTarget) return
           try {
-            const { error } = await db.from('employees').delete().eq('id', deleteTarget.id)
-            if (error) throw error
+            await deleteEmployeeWithDevice(db, deleteTarget.id)
             toast.success(t('common.deleted'))
             setDeleteTarget(null)
             void list.reload()

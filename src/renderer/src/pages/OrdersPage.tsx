@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   ChefHat,
   CircleDollarSign,
+  Eye,
   FileText,
   Loader2,
   Printer,
@@ -46,6 +47,7 @@ import { Dialog, ConfirmDialog } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/toast'
 import { fetchOrderFull, ORDER_LIST_SELECT, type OrderFull } from '@/lib/orders'
 import { printA4Invoice, printKitchenTicket, printThermalReceipt } from '@/lib/receipt'
+import { ThermalReceiptPreview } from '@/components/ThermalReceiptPreview'
 
 type PeriodFilter = Period | 'all'
 
@@ -113,6 +115,7 @@ export default function OrdersPage(): JSX.Element {
 
   const [splitOpen, setSplitOpen] = useState(false)
   const [splitIds, setSplitIds] = useState<string[]>([])
+  const [previewOpen, setPreviewOpen] = useState(false)
 
   const openDetail = useCallback(
     async (id: string) => {
@@ -163,6 +166,11 @@ export default function OrdersPage(): JSX.Element {
     if (!detail) return []
     const o = detail.order
     return [
+      {
+        label: t('orders.previewReceipt'),
+        icon: <Eye className="h-3.5 w-3.5" />,
+        onClick: () => setPreviewOpen(true)
+      },
       {
         label: t('orders.reprint'),
         icon: <Printer className="h-3.5 w-3.5" />,
@@ -650,6 +658,24 @@ export default function OrdersPage(): JSX.Element {
             )
           })}
         </div>
+      </Dialog>
+
+      <Dialog
+        open={previewOpen}
+        onClose={() => setPreviewOpen(false)}
+        title={`${t('orders.previewReceipt')} · #${detail?.order.order_number ?? ''}`}
+        size="md"
+      >
+        {detail && (
+          <ThermalReceiptPreview
+            data={{
+              order: detail.order,
+              items: detail.items,
+              payments: detail.payments,
+              settings
+            }}
+          />
+        )}
       </Dialog>
     </div>
   )

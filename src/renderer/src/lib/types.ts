@@ -308,6 +308,11 @@ export interface Attendance {
   check_out: string | null
   work_date: string
   note: string | null
+  source?: 'manual' | 'device'
+  device_id?: string | null
+  check_in_event_id?: string | null
+  check_out_event_id?: string | null
+  updated_at?: string
   employees?: Pick<Employee, 'full_name'>
 }
 

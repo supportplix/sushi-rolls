@@ -397,27 +397,29 @@ as $$
       'kds.use','menu.view','menu.manage','inventory.view','inventory.manage','purchases.view',
       'purchases.manage','suppliers.view','suppliers.manage','customers.view','customers.manage',
       'expenses.view','expenses.manage','cash.manage','cash.review','employees.view',
-      'employees.manage','reports.view','users.manage','settings.manage','backup.manage','audit.view'
+      'employees.manage','attendance.view','attendance.manage','reports.view','users.manage',
+      'settings.manage','device.manage','backup.manage','audit.view'
     ]
     when 'owner' then array[
       'dashboard.view','pos.use','orders.view','orders.cancel','orders.refund','tables.manage',
       'kds.use','menu.view','menu.manage','inventory.view','inventory.manage','purchases.view',
       'purchases.manage','suppliers.view','suppliers.manage','customers.view','customers.manage',
       'expenses.view','expenses.manage','cash.manage','cash.review','employees.view',
-      'employees.manage','reports.view','users.manage','settings.manage','backup.manage','audit.view'
+      'employees.manage','attendance.view','attendance.manage','reports.view','users.manage',
+      'settings.manage','backup.manage','audit.view'
     ]
     when 'general_manager' then array[
       'dashboard.view','pos.use','orders.view','orders.cancel','orders.refund','tables.manage',
       'kds.use','menu.view','menu.manage','inventory.view','inventory.manage','purchases.view',
       'purchases.manage','suppliers.view','suppliers.manage','customers.view','customers.manage',
       'expenses.view','expenses.manage','cash.manage','cash.review','employees.view',
-      'employees.manage','reports.view','audit.view'
+      'employees.manage','attendance.view','attendance.manage','reports.view','audit.view'
     ]
     when 'branch_manager' then array[
       'dashboard.view','pos.use','orders.view','orders.cancel','tables.manage','kds.use',
       'menu.view','menu.manage','inventory.view','inventory.manage','purchases.view',
       'purchases.manage','suppliers.view','suppliers.manage','customers.view','customers.manage',
-      'cash.manage','cash.review','employees.view','reports.view'
+      'cash.manage','cash.review','employees.view','attendance.view','reports.view'
     ]
     when 'cashier' then array[
       'pos.use','orders.view','tables.manage','menu.view','customers.view','customers.manage','cash.manage'
@@ -430,7 +432,8 @@ as $$
     ]
     when 'accountant' then array[
       'dashboard.view','orders.view','menu.view','customers.view','expenses.view','expenses.manage',
-      'cash.review','reports.view','audit.view','inventory.view','suppliers.view','purchases.view'
+      'cash.review','reports.view','audit.view','inventory.view','suppliers.view','purchases.view',
+      'attendance.view'
     ]
     else array[]::text[]
   end;

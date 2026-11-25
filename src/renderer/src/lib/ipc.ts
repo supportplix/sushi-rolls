@@ -53,6 +53,35 @@ function webFallback(): SushiApi {
         return { ok: true }
       }
     },
+    zkteco: {
+      status: async () => ({
+        state: 'device-missing',
+        deviceName: null,
+        serialNumber: null,
+        firmware: null,
+        transport: null,
+        comPort: null,
+        lastSeenAt: null,
+        lastSyncAt: null,
+        pendingOutbox: 0,
+        message: NO_ELECTRON
+      }),
+      health: async () => ({
+        state: 'device-missing',
+        deviceName: null,
+        serialNumber: null,
+        firmware: null,
+        transport: null,
+        comPort: null,
+        lastSeenAt: null,
+        lastSyncAt: null,
+        pendingOutbox: 0,
+        message: NO_ELECTRON
+      }),
+      service: async () => ({ ok: false, error: NO_ELECTRON }),
+      configure: async () => ({ ok: false, error: NO_ELECTRON }),
+      onStatus: () => undefined
+    },
     updates: {
       state: async () => ({ state: 'dev', currentVersion: 'web' }),
       check: async () => ({ state: 'dev', currentVersion: 'web' }),

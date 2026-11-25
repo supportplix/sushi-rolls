@@ -1,7 +1,9 @@
 import logoUrl from '@/assets/logo-sm.png'
+import printLogoUrl from '@/assets/logo-print.png'
 import fontAr from '@/assets/fonts/cairo-arabic.woff2'
 
 let cachedLogo: string | null = null
+let cachedPrintLogo: string | null = null
 let cachedFont: string | null = null
 
 async function toDataUrl(url: string): Promise<string> {
@@ -23,6 +25,16 @@ export async function logoDataUrl(): Promise<string> {
     cachedLogo = ''
   }
   return cachedLogo
+}
+
+export async function printLogoDataUrl(): Promise<string> {
+  if (cachedPrintLogo) return cachedPrintLogo
+  try {
+    cachedPrintLogo = await toDataUrl(printLogoUrl)
+  } catch {
+    cachedPrintLogo = ''
+  }
+  return cachedPrintLogo
 }
 
 export async function fontDataUrl(): Promise<string> {

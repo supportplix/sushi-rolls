@@ -14,10 +14,17 @@ import type {
   SaveResult,
   UpdateStatus
 } from '@shared/ipc'
+import { receiptPageSize } from '@shared/ipc'
+import { ZkTecoBridgeManager } from './zkteco'
+import type { ZkTecoServiceResult, ZkTecoStatus } from '@shared/ipc'
 
 const isDev = !!process.env['ELECTRON_RENDERER_URL']
 const RENDERER_URL = process.env['ELECTRON_RENDERER_URL'] || ''
 const APP_ID = 'com.sushirolls.pos'
+
+// Non-printable hardware allowance (mm) reserved at each physical paper edge so
+// thermal printer margins never clip receipt content.
+const RECEIPT_SAFE_MARGIN_MM = 1.5
 
 if (isDev && process.env['SUSHI_CDP_PORT']) {
   app.commandLine.appendSwitch('remote-debugging-port', process.env['SUSHI_CDP_PORT'])
@@ -25,6 +32,11 @@ if (isDev && process.env['SUSHI_CDP_PORT']) {
 
 let mainWindow: BrowserWindow | null = null
 let kdsWindow: BrowserWindow | null = null
+
+const zktecoBridge = new ZkTecoBridgeManager((status) => {
+  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : BrowserWindow.getAllWindows()[0]
+  if (win && !win.isDestroyed()) win.webContents.send('zkteco:status', status)
+})
 
 const configSchema = z.object({
   supabaseUrl: z.string().max(300),
@@ -38,7 +50,8 @@ const configSchema = z.object({
 const printArgsSchema = z.object({
   html: z.string().min(20).max(6_000_000),
   deviceName: z.string().max(300).nullable().optional(),
-  silent: z.boolean().optional()
+  silent: z.boolean().optional(),
+  widthMm: z.union([z.literal(58), z.literal(80)]).optional()
 })
 
 const pdfArgsSchema = z.object({
@@ -60,6 +73,18 @@ const openFileSchema = z.object({
     .array(z.object({ name: z.string().max(100), extensions: z.array(z.string().max(10)).max(10) }))
     .max(10)
     .optional()
+})
+
+const zktecoConfigureSchema = z.object({
+  supabaseUrl: z.string().url().max(300),
+  deviceToken: z.string().min(32).max(512),
+  timezone: z.string().min(1).max(64),
+  accessToken: z.string().min(1).max(4000)
+})
+
+const zktecoServiceSchema = z.object({
+  action: z.enum(['install', 'start', 'stop', 'remove', 'agent-install', 'agent-remove']),
+  accessToken: z.string().min(1).max(4000)
 })
 
 function configPath(): string {
@@ -168,9 +193,48 @@ function wait(ms: number): Promise<void> {
 async function loadHtml(win: BrowserWindow, html: string): Promise<void> {
   const dataUrl = 'data:text/html;charset=utf-8;base64,' + Buffer.from(html, 'utf-8').toString('base64')
   await win.loadURL(dataUrl)
-  await win.webContents.executeJavaScript('document.fonts ? document.fonts.ready.then(()=>true) : true').catch(() => true)
-  await wait(350)
+  await win.webContents
+    .executeJavaScript(`
+      (async () => {
+        if (document.fonts) {
+          await document.fonts.ready
+        }
+        await new Promise<void>((resolve) => {
+          const images = Array.from(document.images)
+          if (!images.length) {
+            return resolve()
+          }
+          const tick = () => {
+            const ready = images.every((img) => img.complete && img.naturalWidth > 0 && img.naturalHeight > 0)
+            if (ready) {
+              return resolve()
+            }
+            requestAnimationFrame(tick)
+          }
+          tick()
+          setTimeout(resolve, 5000)
+        })
+      })();
+    `)
+    .catch(() => true)
 }
+
+ipcMain.handle('zkteco:status', (): ZkTecoStatus => zktecoBridge.getStatus())
+
+ipcMain.handle('zkteco:health', async (): Promise<ZkTecoStatus> => zktecoBridge.health())
+
+ipcMain.handle('zkteco:configure', async (_e, raw): Promise<ZkTecoServiceResult> => {
+  const parsed = zktecoConfigureSchema.safeParse(raw)
+  if (!parsed.success) return { ok: false, error: 'INVALID_ARGS' }
+  if (!await zktecoBridge.authorize(parsed.data.accessToken)) return { ok: false, error: 'FORBIDDEN' }
+  return zktecoBridge.configure(parsed.data.supabaseUrl, parsed.data.deviceToken, parsed.data.timezone)
+})
+
+ipcMain.handle('zkteco:service', async (_e, raw): Promise<ZkTecoServiceResult> => {
+  const parsed = zktecoServiceSchema.safeParse(raw)
+  if (!parsed.success) return { ok: false, error: 'INVALID_ARGS' }
+  return zktecoBridge.service(parsed.data.action, parsed.data.accessToken)
+})
 
 ipcMain.handle('config:get', (): AppConfig | null => readConfig())
 
@@ -197,6 +261,17 @@ ipcMain.handle('print:receipt', async (_e, raw): Promise<PrintResult> => {
   const win = openHidden()
   try {
     await loadHtml(win, args.html)
+    const contentHeightPxRaw = await win.webContents.executeJavaScript(`
+      Math.ceil(Math.max(
+        document.documentElement.scrollHeight,
+        document.body.scrollHeight,
+        document.body.getBoundingClientRect().height,
+        document.documentElement.getBoundingClientRect().height
+      ))
+    `) as number
+    const contentHeightPx = Number.isFinite(contentHeightPxRaw) ? contentHeightPxRaw : 0
+    const pageSize = receiptPageSize(args.widthMm, contentHeightPx)
+    console.log('[print:receipt] measured contentHeightPx=%o pageSize=%o widthMm=%o', contentHeightPx, pageSize, args.widthMm)
     const silent = args.silent ?? !!args.deviceName
     if (!silent) {
       win.show()
@@ -209,7 +284,7 @@ ipcMain.handle('print:receipt', async (_e, raw): Promise<PrintResult> => {
           printBackground: true,
           deviceName: args.deviceName ?? undefined,
           margins: { marginType: 'none' },
-          pageSize: undefined
+          pageSize
         },
         (success, failureReason) => resolve({ ok: success, error: success ? undefined : failureReason })
       )
@@ -397,6 +472,7 @@ if (!gotLock) {
     mainWindow = createWindow()
     mainWindow.on('closed', () => (mainWindow = null))
     setupAutoUpdates()
+    zktecoBridge.start()
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
@@ -404,6 +480,8 @@ if (!gotLock) {
       }
     })
   })
+
+  app.on('before-quit', () => zktecoBridge.stop())
 
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit()

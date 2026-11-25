@@ -4,6 +4,7 @@ import {
   Building2,
   CheckCircle2,
   DownloadCloud,
+  Fingerprint,
   HardDriveDownload,
   Info,
   Loader2,
@@ -33,15 +34,19 @@ import { ConfirmDialog } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/toast'
 import { logoDataUrl } from '@/lib/logo'
 import { exportBackup, importBackup } from '@/lib/backup'
+import { getSampleReceiptData, printSampleReceipt } from '@/lib/receipt'
+import { ThermalReceiptPreview } from '@/components/ThermalReceiptPreview'
 import { useAsync } from '@/lib/hooks'
 import { checkForUpdates, installUpdate, useUpdateStatus } from '@/lib/updates'
+import ZKTecoSettingsCard from '@/components/ZKTecoSettingsCard'
 
-type Tab = 'restaurant' | 'tax' | 'receipt' | 'printing' | 'session' | 'backup' | 'about'
+type Tab = 'restaurant' | 'tax' | 'receipt' | 'printing' | 'zkteco' | 'session' | 'backup' | 'about'
 
 export default function SettingsPage(): JSX.Element {
   const db = useDb()
-  const { settings, refreshSettings, profile } = useAuth()
+  const { settings, refreshSettings, profile, can } = useAuth()
   const toast = useToast()
+  const canManageDevice = can('device.manage') || profile?.role === 'super_admin'
   const [tab, setTab] = useState<Tab>('restaurant')
   const [saving, setSaving] = useState(false)
   const [version, setVersion] = useState('')
@@ -99,19 +104,24 @@ export default function SettingsPage(): JSX.Element {
     }
   }
 
+  const sampleReceiptData = useMemo(() => {
+    const width = printing.width === '58' ? 58 : 80
+    return getSampleReceiptData({
+      ...(settings ?? {}),
+      restaurant,
+      receipt,
+      printing: { width, printer: printing.printer }
+    })
+  }, [settings, restaurant, receipt, printing])
+
   const testPrint = async (): Promise<void> => {
-    const logo = await logoDataUrl()
-    const html = `<html dir="rtl"><head><style>
-      @page{size:${printing.width}mm auto;margin:0}body{width:${printing.width}mm;padding:6mm;font-family:'Segoe UI',Tahoma,sans-serif;text-align:center}
-      img{width:90px;border-radius:8px}h1{font-size:20px;margin:4px 0}p{font-size:12px;margin:2px 0;color:#333}
-      .line{border-top:2px dashed #000;margin:4mm 0}</style></head><body>
-      ${logo ? `<img src="${logo}">` : ''}
-      <h1>${restaurant.name || 'SUSHI ROLLS'}</h1>
-      <p>${t('settings.testPrint')}</p><div class="line"></div>
-      <p>${new Date().toLocaleString('ar-EG-u-nu-latn')}</p>
-      <p>80mm · 58mm · Thermal OK</p></body></html>`
-    const printer = printing.printer || null
-    const res = await api.print.receipt({ html, deviceName: printer, silent: !!printer })
+    const width = printing.width === '58' ? 58 : 80
+    const res = await printSampleReceipt({
+      ...(settings ?? {}),
+      restaurant,
+      receipt,
+      printing: { width, printer: printing.printer }
+    })
     if (res.ok) toast.success(t('settings.testPrinted'))
     else if (res.error) toast.error(res.error)
   }
@@ -121,6 +131,7 @@ export default function SettingsPage(): JSX.Element {
     { value: 'tax', label: t('settings.tax'), icon: <ReceiptText className="h-3.5 w-3.5" /> },
     { value: 'receipt', label: t('settings.receipt'), icon: <ReceiptText className="h-3.5 w-3.5" /> },
     { value: 'printing', label: t('settings.printing'), icon: <Printer className="h-3.5 w-3.5" /> },
+    ...(canManageDevice ? [{ value: 'zkteco' as Tab, label: 'جهاز البصمة', icon: <Fingerprint className="h-3.5 w-3.5" /> }] : []),
     { value: 'session', label: t('settings.session'), icon: <Timer className="h-3.5 w-3.5" /> },
     { value: 'backup', label: t('settings.backup'), icon: <ServerCog className="h-3.5 w-3.5" /> },
     { value: 'about', label: t('settings.about'), icon: <Info className="h-3.5 w-3.5" /> }
@@ -210,31 +221,45 @@ export default function SettingsPage(): JSX.Element {
 
       {tab === 'printing' && (
         <SectionCard title={t('settings.printing')}>
-          <div className="max-w-xl space-y-4">
-            <Field label={t('settings.printer')}>
-              <Select value={printing.printer} onChange={(v) => setPrinting({ ...printing, printer: v })} options={printerOptions} />
-            </Field>
-            <Field label={t('settings.width')}>
-              <Select
-                value={printing.width}
-                onChange={(v) => setPrinting({ ...printing, width: v })}
-                options={[
-                  { value: '80', ar: '80mm' },
-                  { value: '58', ar: '58mm' }
-                ]}
+          <div className="grid gap-6 lg:grid-cols-2">
+            <div className="max-w-xl space-y-4">
+              <Field label={t('settings.printer')}>
+                <Select value={printing.printer} onChange={(v) => setPrinting({ ...printing, printer: v })} options={printerOptions} />
+              </Field>
+              <Field label={t('settings.width')}>
+                <Select
+                  value={printing.width}
+                  onChange={(v) => setPrinting({ ...printing, width: v })}
+                  options={[
+                    { value: '80', ar: '80mm' },
+                    { value: '58', ar: '58mm' }
+                  ]}
+                />
+              </Field>
+              <div className="flex items-center gap-2">
+                <Button icon={saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} onClick={() => void saveKey('printing', { width: Number(printing.width), printer: printing.printer })} disabled={saving}>
+                  {t('common.save')}
+                </Button>
+                <Button variant="ghost" icon={<Printer className="h-4 w-4" />} onClick={() => void testPrint()}>
+                  {t('settings.testPrint')}
+                </Button>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-white/[0.08] bg-black/40 p-4">
+              <div className="mb-2 text-xs font-bold text-txt-dim">معاينة مباشرة للإيصال الحراري</div>
+              <ThermalReceiptPreview
+                data={sampleReceiptData}
+                initialWidth={Number(printing.width) === 58 ? 58 : 80}
+                onWidthChange={(w) => setPrinting((p) => ({ ...p, width: String(w) }))}
+                onPrint={() => void testPrint()}
               />
-            </Field>
-            <div className="flex items-center gap-2">
-              <Button icon={saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} onClick={() => void saveKey('printing', { width: Number(printing.width), printer: printing.printer })} disabled={saving}>
-                {t('common.save')}
-              </Button>
-              <Button variant="ghost" icon={<Printer className="h-4 w-4" />} onClick={() => void testPrint()}>
-                {t('settings.testPrint')}
-              </Button>
             </div>
           </div>
         </SectionCard>
       )}
+
+      {tab === 'zkteco' && canManageDevice && <ZKTecoSettingsCard />}
 
       {tab === 'session' && (
         <SectionCard title={t('settings.session')}>

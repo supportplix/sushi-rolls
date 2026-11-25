@@ -1,0 +1,46 @@
+ZKTeco LX15 integration binaries
+
+Verified: 2026-11-24
+
+Runtime SDK selected:
+SDK 6.3.1.37, 32-bit Windows binaries
+Mirror source: https://github.com/hmojicag/ZKTecoStandAlonePullSDK/tree/master/SDK-Ver6.3.1.37/32bit
+Official ZKTeco SDK repository: https://github.com/ZKTeco/Standalone-SDK
+The official repository's 6.2.4.11 zkemsdk.dll does not export Z_Connect_USB_STD. The 6.3.1.37 package does, and it successfully opened the physical LX15 and returned its serial/firmware with zero users, fingerprints, and records. The SDK binaries are unsigned.
+
+Runtime SDK SHA-256:
+IOTCAPIs.dll db4e4a48566a7ec7da0f1ec8dddb237c43c17c00ffe871b96a8ddd54e1d082d7
+RDTAPIs.dll 825d95e102ecbc0e6a52480c42c0125273197e4f43de9e4bea6693a2214f0a9d
+ZKCommuCryptoClient.dll debde88276f68e513adf0d64bf41512389130d0d080d9773b12d1dc943bafb56
+ZKEMCrypto.dll 57f404cbd8d5facd5ed8c9a0a7f03a1aae5bab4d3e0289b6b46dfa159f1bea6a
+commpro.dll a95dea699ceb87a3ed28c47eede23209c5e799315800448e6b88b2341212f7d8
+comms.dll 54727b0baae075f394b91a429256e204bf3e33ab915da3fee3daf8e1b737442d
+libareacode.dll 722bce2e256cec5d4e9b0a36adfb0e43464011e20b57b3934efe9a97cb68d79e
+libzklog.dll e6f6191b2554cbc6376b443ffd6fa00c6b8e5df8e39db72350b7fb6aa4af5d03
+p4p.dll ffe70331c087621a2967fe2b2672d64931b906695f03d3c87552fb5d61a704ec
+p4pcomm.dll 182dab50f936c7bd5e70c05d478b35e0ca5bf13397f983b3468352421e89f9cf
+plcommpro.dll 2972d54433e2a25315cf2c0e491f72612f644c648ae755a822fb316cb13fed80
+plcomms.dll 8b1a3d5ffcbab33239f42050874c9ff325ce85ddfc26ea4711058a166d5ea574
+plrscagent.dll 303e479c17465ef84af27183958775dd44bfa896dd1315461b77e8998d4c4fb1
+plrscomm.dll 97f5475915fe3464d7885cc56f520d22c853432ccfbdb7e1cf4e64c42353d0cd
+pltcpcomm.dll 5fc623abb19f8c8a7181d58b168a02250d396b92f39c45419000b923bc67e36b
+plusbcomm.dll 3f8dbfcc781ce2af4491d0b571b1b08dc7da9768444177c7dd1e1b4b116d921d
+rscagent.dll 7e6da80009e4b547d6a99c617d60a070d43b23e9cb6dcbe27a6654209678da0a
+rscomm.dll 2ed8cab8e3203207d02691a8f553026c7626b23a0f1416f1466d913740cd9f8b
+tcpcomm.dll a236fd6256b7ac1f9dc65e3129a084aecfda6aa5143d17203baf042eada2a924
+usbcomm.dll 0398db241070809905645d3939983a378aec8bf3ab769f364dc30f0ac34bdb53
+usbstd.dll f2ad8c28edbe8d632f3460a91e3999cf98e2f000b01e8d1b6abc35b670558a89
+zkemkeeper.dll a197d3f7c98ac572917e5d6755f309eabd821eb790a55473d448aabfd05336d6
+zkemsdk.dll 1883df3cf88bfc0d205d523e15ed05c4dda8227e0f7b11d2e02719c339986bc9
+
+Signed fallback driver installer:
+driver-setup-5.0.0.12.exe
+SHA-256: 8089ac28c68d9e9677ef57796d8ac44d6e025e50e3f88ce13d3683d8cb8b1e19
+Authenticode: Valid
+Signer: Xiamen ZKTeco Biometric Identification Technology Co.,ltd
+Signer thumbprint: 2A55124CBF271DE40D7002B5B616C3652C9B7EDE
+Source package: https://d1agmp9y4cki1i.cloudfront.net/files/20230816/ZKTimeNet%203.0.zip
+
+Current Windows device:
+USB\VID_1B55&PID_0A01, Attendance Device, driver 1.2.6.0, service libusb0.
+Direct USB transport is working; no virtual COM port is required for the selected SDK path.

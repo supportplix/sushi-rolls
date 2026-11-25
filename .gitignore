@@ -2,7 +2,11 @@ node_modules/
 out/
 dist/
 dist-next/
+dist-zkteco*/
 release/
+resources/zkteco/
+zkteco-bridge/bin/
+zkteco-bridge/obj/
 .env
 .env.local
 .env.*.local

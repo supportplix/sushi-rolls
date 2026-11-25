@@ -1,13 +1,14 @@
 {
   "name": "sushi-rolls",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "private": true,
   "description": "SUSHI ROLLS — Premium Restaurant Management & POS",
   "author": "Osama",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "build:zkteco": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File zkteco-bridge/build-bridge.ps1 && node build/build-zkteco.mjs",
+    "build": "npm run build:zkteco && electron-vite build",
     "start": "electron-vite preview",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json",

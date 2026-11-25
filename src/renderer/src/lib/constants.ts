@@ -110,9 +110,12 @@ export const PERMISSIONS: { key: string; ar: string; en: string; group: string }
   { key: 'cash.review', ar: 'مراجعة الورديات', en: 'Review shifts', group: 'finance' },
   { key: 'employees.view', ar: 'عرض الموظفين', en: 'View employees', group: 'staff' },
   { key: 'employees.manage', ar: 'إدارة الموظفين', en: 'Manage employees', group: 'staff' },
+  { key: 'attendance.view', ar: 'عرض الحضور والانصراف', en: 'View attendance', group: 'staff' },
+  { key: 'attendance.manage', ar: 'إدارة الحضور والانصراف', en: 'Manage attendance', group: 'staff' },
   { key: 'reports.view', ar: 'عرض التقارير', en: 'View reports', group: 'reports' },
   { key: 'users.manage', ar: 'إدارة المستخدمين', en: 'Manage users', group: 'admin' },
   { key: 'settings.manage', ar: 'إدارة الإعدادات', en: 'Manage settings', group: 'admin' },
+  { key: 'device.manage', ar: 'إدارة جهاز البصمة', en: 'Manage biometric device', group: 'admin' },
   { key: 'backup.manage', ar: 'النسخ الاحتياطي', en: 'Backups', group: 'admin' },
   { key: 'audit.view', ar: 'عرض سجل النشاط', en: 'View audit log', group: 'admin' }
 ]
@@ -121,13 +124,13 @@ const ALL = PERMISSIONS.map((p) => p.key)
 
 export const ROLE_DEFAULTS: Record<Role, string[]> = {
   super_admin: ALL,
-  owner: ALL,
-  general_manager: ALL.filter((p) => !['users.manage', 'settings.manage', 'backup.manage'].includes(p)),
+  owner: ALL.filter((p) => p !== 'device.manage'),
+  general_manager: ALL.filter((p) => !['users.manage', 'settings.manage', 'backup.manage', 'device.manage'].includes(p)),
   branch_manager: [
     'dashboard.view', 'pos.use', 'orders.view', 'orders.cancel', 'tables.manage', 'kds.use',
     'menu.view', 'menu.manage', 'inventory.view', 'inventory.manage', 'purchases.view',
     'purchases.manage', 'suppliers.view', 'suppliers.manage', 'customers.view',
-    'customers.manage', 'cash.manage', 'cash.review', 'employees.view', 'reports.view'
+    'customers.manage', 'cash.manage', 'cash.review', 'employees.view', 'attendance.view', 'reports.view'
   ],
   cashier: ['pos.use', 'orders.view', 'tables.manage', 'menu.view', 'customers.view', 'customers.manage', 'cash.manage'],
   waiter: ['pos.use', 'orders.view', 'tables.manage', 'menu.view'],
@@ -139,7 +142,7 @@ export const ROLE_DEFAULTS: Record<Role, string[]> = {
   accountant: [
     'dashboard.view', 'orders.view', 'menu.view', 'customers.view', 'expenses.view',
     'expenses.manage', 'cash.review', 'reports.view', 'audit.view', 'inventory.view',
-    'suppliers.view', 'purchases.view'
+    'suppliers.view', 'purchases.view', 'attendance.view'
   ]
 }
 
