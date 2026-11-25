@@ -15,10 +15,10 @@ if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
     throw "Bridge executable not found: $exe"
 }
 
-function Invoke-Sc([string[]]$Arguments) {
+function Invoke-Sc([string[]]$Arguments, [int[]]$SuccessExitCodes = @()) {
     $output = & "$env:WINDIR\System32\sc.exe" @Arguments 2>&1
     $exitCode = $LASTEXITCODE
-    if ($exitCode -ne 0) {
+    if ($exitCode -ne 0 -and $SuccessExitCodes -notcontains $exitCode) {
         $detail = ($output | ForEach-Object { $_.ToString() }) -join ' '
         if ([string]::IsNullOrWhiteSpace($detail)) {
             throw "sc.exe failed with exit code $exitCode"
@@ -65,7 +65,10 @@ try {
             if ($LASTEXITCODE -ne 0) {
                 throw 'SERVICE_NOT_INSTALLED'
             }
-            Invoke-Sc @('start', $serviceName)
+            $service = Get-Service -Name $serviceName -ErrorAction Stop
+            if ($service.Status -ne [System.ServiceProcess.ServiceControllerStatus]::Running) {
+                Invoke-Sc -Arguments @('start', $serviceName) -SuccessExitCodes @(1056)
+            }
         }
         'stop' { Invoke-Sc @('stop', $serviceName) }
         'remove' {
