@@ -9,7 +9,7 @@ export function errorCode(err: unknown): string {
   return match ? match[1] : ''
 }
 
-export function humanError(err: unknown): string {
+export function humanError(err: unknown, includeDetails = false): string {
   const raw =
     (err as { message?: string })?.message ??
     (err as { error?: string })?.error ??
@@ -19,6 +19,7 @@ export function humanError(err: unknown): string {
   const translated = code ? t(`error.${code}`) : ''
   if (translated && translated !== `error.${code}`) return translated
   if (raw.includes('Failed to fetch') || raw.includes('fetch failed')) return t('error.CONNECTION')
+  if (includeDetails && raw) return raw
   console.error('[sushi]', err)
   return t('common.error')
 }

@@ -11,4 +11,12 @@ describe('humanError', () => {
   it('translates a service that is not installed', () => {
     expect(humanError(new Error('SERVICE_NOT_INSTALLED'))).toBe('خدمة البصمة غير مثبتة. اضغط «تثبيت الخدمة» أولاً.')
   })
+
+  it('shows the underlying message for otherwise-untranslated enrollment errors', () => {
+    expect(humanError(new Error('USB device is unavailable'), true)).toBe('USB device is unavailable')
+  })
+
+  it('keeps unrelated unknown errors generic by default', () => {
+    expect(humanError(new Error('unexpected internal error'))).toBe('حصل خطأ، حاول تاني')
+  })
 })

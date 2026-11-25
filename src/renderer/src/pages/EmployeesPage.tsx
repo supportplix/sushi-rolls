@@ -204,8 +204,12 @@ export default function EmployeesPage(): JSX.Element {
       void employeeDevices.reload()
       void commands.reload()
     } catch (err) {
-      const message = humanError(err)
-      if (action === 'enroll') setEnrollmentError(message)
+      const message = humanError(err, action === 'enroll')
+      if (action === 'enroll') {
+        setEnrollmentError(message)
+        void employeeDevices.reload()
+        void commands.reload()
+      }
       toast.error(message)
     } finally {
       setZkBusy(null)
@@ -244,8 +248,9 @@ export default function EmployeesPage(): JSX.Element {
             setEnrollmentCommandId(await startEnrollment(db, employeeId))
           }
         } catch (zkError) {
-          setEnrollmentError(humanError(zkError))
-          toast.error(`تم حفظ الموظف، لكن تعذر تجهيز البصمة: ${humanError(zkError)}`)
+          const message = humanError(zkError, true)
+          setEnrollmentError(message)
+          toast.error(`تم حفظ الموظف، لكن تعذر تجهيز البصمة: ${message}`)
         }
       }
       toast.success(t('employees.added'))
