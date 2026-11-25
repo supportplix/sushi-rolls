@@ -83,13 +83,52 @@ export async function enqueueEmployeeCommand(
     if ((error as { code?: string }).code === 'PGRST202') throw new Error('ZKTECO_SCHEMA_NOT_DEPLOYED')
     throw error
   }
-  return String(data?.id ?? '')
+  const commandId = String(data?.id ?? '')
+  if (!commandId) throw new Error('DEVICE_COMMAND_MISSING')
+  return commandId
 }
 
-export async function startEnrollment(db: SupabaseClient, employeeId: string): Promise<void> {
+export async function startEnrollment(db: SupabaseClient, employeeId: string): Promise<string> {
+  const deviceStatus = await api.zkteco.health()
+  if (deviceStatus.state !== 'connected') {
+    throw new Error(deviceStatus.message ?? 'DEVICE_NOT_CONNECTED')
+  }
+
   const createKey = `create-${employeeId}-${Date.now()}`
-  await enqueueEmployeeCommand(db, employeeId, 'create_user', createKey)
-  await enqueueEmployeeCommand(db, employeeId, 'start_enrollment', `enroll-${employeeId}-${Date.now()}`)
+  const createCommandId = await enqueueEmployeeCommand(db, employeeId, 'create_user', createKey)
+  await waitForDeviceCommand(db, createCommandId, false)
+
+  const enrollmentCommandId = await enqueueEmployeeCommand(
+    db,
+    employeeId,
+    'start_enrollment',
+    `enroll-${employeeId}-${Date.now()}`
+  )
+  return enrollmentCommandId
+}
+
+async function waitForDeviceCommand(
+  db: SupabaseClient,
+  commandId: string,
+  waitForProcessing: boolean
+): Promise<void> {
+  const deadline = Date.now() + 30_000
+  while (Date.now() < deadline) {
+    const { data: command, error } = await db
+      .from('device_commands')
+      .select('status,last_error')
+      .eq('id', commandId)
+      .maybeSingle()
+    if (error) throw error
+    if (!command) throw new Error('DEVICE_COMMAND_NOT_FOUND')
+    if (command.status === 'failed' || command.status === 'timed_out') {
+      throw new Error(command.last_error ?? 'DEVICE_COMMAND_FAILED')
+    }
+    if (command.status === 'completed' || (waitForProcessing && command.status === 'processing')) return
+    await new Promise((resolve) => setTimeout(resolve, 500))
+  }
+
+  throw new Error(waitForProcessing ? 'DEVICE_COMMAND_NOT_DISPATCHED' : 'DEVICE_COMMAND_TIMEOUT')
 }
 
 export async function deleteEmployeeWithDevice(db: SupabaseClient, employeeId: string): Promise<void> {

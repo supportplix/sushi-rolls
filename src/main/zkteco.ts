@@ -1,8 +1,9 @@
 import { app } from 'electron'
 import { spawn } from 'child_process'
+import { randomUUID } from 'crypto'
 import { createConnection, Socket } from 'net'
 import { join } from 'path'
-import { existsSync, readFileSync } from 'fs'
+import { existsSync, readFileSync, unlinkSync } from 'fs'
 import { z } from 'zod'
 import type { ZkTecoServiceResult, ZkTecoStatus } from '@shared/ipc'
 
@@ -31,6 +32,10 @@ const statusSchema = z.object({
   lastSyncAt: z.string().nullable(),
   pendingOutbox: z.number().int().nonnegative(),
   message: z.string().nullable()
+})
+const serviceResultSchema = z.object({
+  ok: z.boolean(),
+  error: z.string().optional()
 })
 
 function bridgePath(): string {
@@ -248,16 +253,38 @@ export class ZkTecoBridgeManager {
       if (!existsSync(script)) return { ok: false, error: 'SERVICE_SCRIPT_MISSING' }
       const scriptAction = agent ? (action === 'agent-install' ? 'install' : 'remove') : action
       const verb = agent ? '' : ' -Verb RunAs'
-      const command = `$ErrorActionPreference='Stop'; $p=Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','${script.replace(/'/g, "''")}','-Action','${scriptAction}')${verb} -Wait -PassThru; exit $p.ExitCode`
+      const reportPath = join(app.getPath('temp'), `sushi-rolls-zkteco-${randomUUID()}.json`)
+      const scriptArgument = `"${script.replace(/'/g, "''")}"`
+      const reportArgs = agent ? '' : `,'-ReportPath','"${reportPath.replace(/'/g, "''")}"'`
+      const command = `$ErrorActionPreference='Stop'; try { $p=Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','${scriptArgument}','-Action','${scriptAction}'${reportArgs})${verb} -Wait -PassThru; exit $p.ExitCode } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`
       const encoded = Buffer.from(command, 'utf16le').toString('base64')
+      let stderr = ''
       const exitCode = await new Promise<number>((resolve, reject) => {
-        const child = spawn('powershell.exe', ['-NoProfile', '-EncodedCommand', encoded], { windowsHide: true, stdio: 'ignore' })
+        const child = spawn('powershell.exe', ['-NoProfile', '-EncodedCommand', encoded], {
+          windowsHide: true,
+          stdio: ['ignore', 'ignore', 'pipe']
+        })
+        child.stderr?.setEncoding('utf8')
+        child.stderr?.on('data', (chunk: string) => { stderr += chunk })
         child.on('error', reject)
-        child.on('exit', (code) => resolve(code ?? 1))
+        child.on('close', (code) => resolve(code ?? 1))
       })
-      return exitCode === 0 ? { ok: true } : { ok: false, error: `SERVICE_EXIT_${exitCode}` }
+      let reportError: string | null = null
+      if (!agent && existsSync(reportPath)) {
+        const report = serviceResultSchema.safeParse(JSON.parse(readFileSync(reportPath, 'utf8')))
+        unlinkSync(reportPath)
+        if (!report.success) return { ok: false, error: 'SERVICE_RESULT_INVALID' }
+        if (!report.data.ok) reportError = report.data.error ?? null
+      }
+      if (exitCode === 0) return { ok: true }
+      if (reportError === 'SERVICE_ADMIN_REQUIRED' || reportError === 'SERVICE_NOT_INSTALLED') {
+        return { ok: false, error: reportError }
+      }
+      const detail = reportError || stderr.trim() || `PowerShell exited with code ${exitCode}`
+      return { ok: false, error: `SERVICE_ACTION_FAILED: ${detail}` }
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : 'SERVICE_ACTION_FAILED' }
+      const detail = error instanceof Error ? error.message : 'Unknown service action failure'
+      return { ok: false, error: `SERVICE_ACTION_FAILED: ${detail}` }
     }
   }
 }

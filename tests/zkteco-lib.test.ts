@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from 'vitest'
 vi.mock('@/lib/ipc', () => ({
   api: {
     zkteco: {
-      configure: vi.fn(async () => ({ ok: true }))
+      configure: vi.fn(async () => ({ ok: true })),
+      health: vi.fn(async () => ({ state: 'connected', message: null }))
     }
   }
 }))
@@ -19,9 +20,21 @@ import {
 import { api } from '../src/renderer/src/lib/ipc'
 
 function fakeDb() {
-  const rpc = vi.fn(async (_name: string, _args: Record<string, unknown>): Promise<{ data: unknown; error: unknown }> => ({ data: null, error: null }))
+  let commandNumber = 0
+  const rpc = vi.fn(async (_name: string, _args: Record<string, unknown>): Promise<{ data: unknown; error: unknown }> => ({
+    data: { id: `command-${++commandNumber}` },
+    error: null
+  }))
+  const from = vi.fn(() => ({
+    select: () => ({
+      eq: () => ({
+        maybeSingle: async () => ({ data: { status: 'completed', last_error: null }, error: null })
+      })
+    })
+  }))
   return {
     rpc,
+    from,
     auth: {
       getSession: vi.fn(async () => ({ data: { session: { access_token: 'admin-token' } } }))
     }

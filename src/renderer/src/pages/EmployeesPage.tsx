@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { CalendarCheck, Clock4, Fingerprint, Link2, Loader2, LogIn, LogOut, Pencil, Plus, RefreshCw, Trash2, UserRoundCheck, Users } from 'lucide-react'
+import { CalendarCheck, CheckCircle2, CircleAlert, Clock4, Fingerprint, Link2, Loader2, LogIn, LogOut, Pencil, Plus, RefreshCw, Trash2, UserRoundCheck, Users } from 'lucide-react'
 import { useAuth, useDb } from '@/lib/auth'
-import { useAsync } from '@/lib/hooks'
+import { useAsync, useRealtimeRefresh } from '@/lib/hooks'
 import { humanError } from '@/lib/errors'
 import { fmtDate, fmtDateTime, money, num, parseNum, startOfDay, toISODate } from '@/lib/format'
 import type { Attendance, Employee, Profile } from '@/lib/types'
@@ -55,6 +55,9 @@ export default function EmployeesPage(): JSX.Element {
   const [busy, setBusy] = useState(false)
   const [zkBusy, setZkBusy] = useState<string | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Employee | null>(null)
+  const [enrollmentTarget, setEnrollmentTarget] = useState<{ id: string; full_name: string } | null>(null)
+  const [enrollmentCommandId, setEnrollmentCommandId] = useState<string | null>(null)
+  const [enrollmentError, setEnrollmentError] = useState<string | null>(null)
 
   const list = useAsync(async () => {
     const { data, error } = await db.from('employees').select('*').order('full_name')
@@ -76,6 +79,11 @@ export default function EmployeesPage(): JSX.Element {
     if (!manage) return [] as DeviceCommand[]
     return listCommands(db)
   }, [db, manage])
+
+  useRealtimeRefresh(manage ? ['employee_devices', 'device_commands'] : [], () => {
+    void employeeDevices.reload()
+    void commands.reload()
+  })
 
   useEffect(() => {
     if (!manage) return
@@ -160,8 +168,13 @@ export default function EmployeesPage(): JSX.Element {
   }
 
   const zkStatus = (employeeId: string): { label: string; color: string } => {
-    const pending = (commands.data ?? []).find((c) => c.employee_id === employeeId && (c.status === 'pending' || c.status === 'processing'))
+    const employeeCommands = (commands.data ?? []).filter((c) => c.employee_id === employeeId)
+    const pending = employeeCommands.find((c) => c.status === 'pending' || c.status === 'processing')
     if (pending) return { label: pending.type === 'start_enrollment' ? 'في انتظار البصمة' : 'جارٍ التجهيز', color: '#E4BE54' }
+    const latestCommand = employeeCommands[0]
+    if (latestCommand?.status === 'failed' || latestCommand?.status === 'timed_out') {
+      return { label: 'فشل التسجيل', color: '#E36B6B' }
+    }
     const mapping = (employeeDevices.data ?? []).find((item) => item.employee_id === employeeId)
     if (!mapping) return { label: 'غير مسجل', color: '#6B7176' }
     if (mapping.enrollment_status === 'enrolled') return { label: 'بصمة مسجلة', color: '#3DBE7A' }
@@ -176,13 +189,24 @@ export default function EmployeesPage(): JSX.Element {
   ): Promise<void> => {
     setZkBusy(employeeId)
     try {
-      if (action === 'enroll') await startEnrollment(db, employeeId)
-      else await enqueueEmployeeCommand(db, employeeId, 'delete_user', `disable-${employeeId}-${Date.now()}`)
-      toast.success(action === 'enroll' ? 'تم إرسال أمر تسجيل البصمة' : 'تم إرسال أمر الحذف من الجهاز')
+      if (action === 'enroll') {
+        const employee = (list.data ?? []).find((item) => item.id === employeeId)
+        setEnrollmentTarget({ id: employeeId, full_name: employee?.full_name ?? 'الموظف' })
+        setEnrollmentCommandId(null)
+        setEnrollmentError(null)
+        const commandId = await startEnrollment(db, employeeId)
+        setEnrollmentCommandId(commandId)
+        toast.success('تم إرسال أمر تسجيل البصمة')
+      } else {
+        await enqueueEmployeeCommand(db, employeeId, 'delete_user', `disable-${employeeId}-${Date.now()}`)
+        toast.success('تم إرسال أمر الحذف من الجهاز')
+      }
       void employeeDevices.reload()
       void commands.reload()
     } catch (err) {
-      toast.error(humanError(err))
+      const message = humanError(err)
+      if (action === 'enroll') setEnrollmentError(message)
+      toast.error(message)
     } finally {
       setZkBusy(null)
     }
@@ -213,8 +237,14 @@ export default function EmployeesPage(): JSX.Element {
       if (employeeId && manage) {
         try {
           if (form.id) await enqueueEmployeeCommand(db, employeeId, 'update_user', `update-${employeeId}-${Date.now()}`)
-          else await startEnrollment(db, employeeId)
+          else {
+            setEnrollmentTarget({ id: employeeId, full_name: payload.full_name })
+            setEnrollmentCommandId(null)
+            setEnrollmentError(null)
+            setEnrollmentCommandId(await startEnrollment(db, employeeId))
+          }
         } catch (zkError) {
+          setEnrollmentError(humanError(zkError))
           toast.error(`تم حفظ الموظف، لكن تعذر تجهيز البصمة: ${humanError(zkError)}`)
         }
       }
@@ -234,8 +264,76 @@ export default function EmployeesPage(): JSX.Element {
     return `${num(h, 1)} س`
   }
 
+  const enrollmentCommand = commands.data?.find((command) => command.id === enrollmentCommandId) ?? null
+  const enrollmentState = enrollmentError
+    ? 'error'
+    : !enrollmentCommandId || !enrollmentCommand
+      ? 'preparing'
+      : enrollmentCommand.status === 'pending'
+        ? 'pending'
+        : enrollmentCommand.status === 'processing'
+          ? 'scanning'
+          : enrollmentCommand.status === 'completed'
+            ? 'completed'
+            : enrollmentCommand.status === 'failed' || enrollmentCommand.status === 'timed_out' || enrollmentCommand.status === 'cancelled'
+              ? 'error'
+              : 'pending'
+
   return (
     <div>
+      <Dialog
+        open={enrollmentTarget !== null}
+        onClose={() => {
+          setEnrollmentTarget(null)
+          setEnrollmentCommandId(null)
+          setEnrollmentError(null)
+        }}
+        title="تسجيل بصمة الموظف"
+        subtitle={enrollmentTarget?.full_name}
+        size="sm"
+      >
+        <div className="flex flex-col items-center gap-4 py-3 text-center" role="status" aria-live="polite">
+          {enrollmentState === 'completed' ? (
+            <CheckCircle2 className="h-14 w-14 text-[#3DBE7A]" aria-hidden="true" />
+          ) : enrollmentState === 'error' ? (
+            <CircleAlert className="h-14 w-14 text-brand-redSoft" aria-hidden="true" />
+          ) : (
+            <Fingerprint className={`h-14 w-14 ${enrollmentState === 'scanning' ? 'animate-pulse text-brand-gold' : 'text-brand-gold'}`} aria-hidden="true" />
+          )}
+          <div>
+            <h3 className="text-sm font-bold">
+              {enrollmentState === 'preparing'
+                ? 'جارٍ تجهيز الموظف وإرسال الأمر للجهاز'
+                : enrollmentState === 'pending'
+                  ? 'تم إرسال الأمر، في انتظار استجابة الجهاز'
+                  : enrollmentState === 'scanning'
+                    ? 'ضع إصبعك على حساس جهاز البصمة'
+                    : enrollmentState === 'completed'
+                      ? 'تم تسجيل البصمة بنجاح'
+                      : 'تعذر تسجيل البصمة'}
+            </h3>
+            {enrollmentState === 'scanning' && (
+              <p className="mt-2 text-xs leading-6 text-txt-dim">
+                اتبع التعليمات التي تظهر على شاشة جهاز ZKTeco حتى يكتمل التسجيل.
+              </p>
+            )}
+            {enrollmentState === 'error' && (
+              <p className="mt-2 text-xs leading-6 text-brand-redSoft">
+                {enrollmentError ?? enrollmentCommand?.last_error ?? 'تعذر تنفيذ أمر التسجيل على الجهاز'}
+              </p>
+            )}
+            {enrollmentState === 'preparing' && (
+              <p className="mt-2 text-xs leading-6 text-txt-dim">
+                سيظهر لك طلب وضع الإصبع عند جاهزية الجهاز. اترك الشاشة مفتوحة أثناء التجهيز.
+              </p>
+            )}
+          </div>
+          {(enrollmentState === 'preparing' || enrollmentState === 'pending') && (
+            <Loader2 className="h-4 w-4 animate-spin text-brand-gold" aria-label="جارٍ تجهيز التسجيل" />
+          )}
+        </div>
+      </Dialog>
+
       <PageHeader
         title={t('employees.title')}
         actions={

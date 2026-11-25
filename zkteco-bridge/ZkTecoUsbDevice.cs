@@ -64,9 +64,6 @@ namespace SushiRolls.ZkTeco
             int flag);
 
         [DllImport("zkemsdk.dll", CallingConvention = CallingConvention.StdCall, ExactSpelling = true)]
-        private static extern int Z_StartIdentify(IntPtr handle);
-
-        [DllImport("zkemsdk.dll", CallingConvention = CallingConvention.StdCall, ExactSpelling = true)]
         private static extern int SSR_Z_GetUserTmp(IntPtr handle,
             [MarshalAs(UnmanagedType.LPStr)] string deviceUserId,
             int fingerIndex,
@@ -158,8 +155,7 @@ namespace SushiRolls.ZkTeco
                 var existing = QueryTemplate(deviceUserId, fingerIndex);
                 if (existing.Status == "failed") return false;
                 if (existing.Status == "enrolled" && SSR_Z_DelUserTmpExt(handle, deviceUserId, fingerIndex) <= 0) return false;
-                if (Z_StartEnrollEx(handle, deviceUserId, fingerIndex, 1) <= 0) return false;
-                return Z_StartIdentify(handle) > 0;
+                return Z_StartEnrollEx(handle, deviceUserId, fingerIndex, 1) > 0;
             }
         }
 

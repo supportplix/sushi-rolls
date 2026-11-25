@@ -14,6 +14,7 @@ export function humanError(err: unknown): string {
     (err as { message?: string })?.message ??
     (err as { error?: string })?.error ??
     (typeof err === 'string' ? err : '')
+  if (raw.startsWith('SERVICE_ACTION_FAILED:')) return raw.slice('SERVICE_ACTION_FAILED:'.length).trim()
   const code = errorCode(err)
   const translated = code ? t(`error.${code}`) : ''
   if (translated && translated !== `error.${code}`) return translated
