@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import type { ZkTecoStatus } from '@shared/ipc'
 import { api } from '@/lib/ipc'
 
 export interface AttendanceDevice {
@@ -50,7 +51,7 @@ export async function listDevices(db: SupabaseClient): Promise<AttendanceDevice[
 }
 
 export async function listEmployeeDevices(db: SupabaseClient): Promise<EmployeeDevice[]> {
-  const { data, error } = await db.from('employee_devices').select('*').order('created_at')
+  const { data, error } = await db.from('employee_devices').select('*').order('id')
   if (error) throw error
   return (data ?? []) as EmployeeDevice[]
 }
@@ -90,6 +91,78 @@ export async function startEnrollment(db: SupabaseClient, employeeId: string): P
   const createKey = `create-${employeeId}-${Date.now()}`
   await enqueueEmployeeCommand(db, employeeId, 'create_user', createKey)
   await enqueueEmployeeCommand(db, employeeId, 'start_enrollment', `enroll-${employeeId}-${Date.now()}`)
+}
+
+/**
+ * Starts fingerprint enrollment directly on the connected LX15 and returns the
+ * command id used to stream every step back to the UI through zkteco:status.
+ */
+export async function enrollFingerprintLive(
+  db: SupabaseClient,
+  employeeId: string,
+  name: string,
+  timeoutSeconds = 300
+): Promise<string> {
+  const { data: session } = await db.auth.getSession()
+  const accessToken = session.session?.access_token
+  if (!accessToken) throw new Error('NO_SESSION')
+
+  let mapping = await db
+    .from('employee_devices')
+    .select('device_user_id')
+    .eq('employee_id', employeeId)
+    .maybeSingle()
+  if (mapping.error) throw mapping.error
+
+  if (!mapping.data?.device_user_id) {
+    await enqueueEmployeeCommand(db, employeeId, 'create_user', `create-live-${employeeId}-${Date.now()}`)
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      mapping = await db
+        .from('employee_devices')
+        .select('device_user_id')
+        .eq('employee_id', employeeId)
+        .maybeSingle()
+      if (mapping.error) throw mapping.error
+      if (mapping.data?.device_user_id) break
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+  }
+  const deviceUserId = mapping.data?.device_user_id
+  if (!deviceUserId) throw new Error('DEVICE_MAPPING_MISSING')
+
+  await db.rpc('zkteco_update_enrollment', { p_employee_id: employeeId, p_status: 'awaiting_scan' })
+  const result = await api.zkteco.enroll({
+    deviceUserId,
+    name,
+    timeoutSeconds,
+    watchOnly: true,
+    accessToken
+  })
+  if (!result.ok) throw new Error(result.error ?? 'ENROLL_FAILED')
+  return result.commandId ?? ''
+}
+
+/** Streams bridge enrollment steps and persists the terminal state in Supabase. */
+export function watchLiveEnrollment(
+  db: SupabaseClient,
+  employeeId: string,
+  commandId: string,
+  onUpdate: (status: ZkTecoStatus) => void
+): () => void {
+  let finished = false
+  return api.zkteco.onStatus((status) => {
+    if (status.enrollmentCommandId !== commandId) return
+    onUpdate(status)
+    const step = status.enrollmentStatus
+    if (finished || !step) return
+    const terminal = step === 'enrolled' || step === 'completed' || step === 'failed' || step === 'timed_out'
+    if (!terminal) return
+    finished = true
+    void db.rpc('zkteco_update_enrollment', {
+      p_employee_id: employeeId,
+      p_status: step === 'enrolled' || step === 'completed' ? 'enrolled' : 'failed'
+    })
+  })
 }
 
 export async function deleteEmployeeWithDevice(db: SupabaseClient, employeeId: string): Promise<void> {

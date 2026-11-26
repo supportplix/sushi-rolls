@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { CalendarCheck, Clock4, Fingerprint, Link2, Loader2, LogIn, LogOut, Pencil, Plus, RefreshCw, Trash2, UserRoundCheck, Users } from 'lucide-react'
 import { useAuth, useDb } from '@/lib/auth'
 import { useAsync } from '@/lib/hooks'
@@ -27,12 +27,14 @@ import { useToast } from '@/components/ui/toast'
 import {
   enqueueEmployeeCommand,
   deleteEmployeeWithDevice,
+  enrollFingerprintLive,
   listCommands,
   listEmployeeDevices,
-  startEnrollment,
+  watchLiveEnrollment,
   type DeviceCommand,
   type EmployeeDevice
 } from '@/lib/zkteco'
+import type { ZkTecoStatus } from '@shared/ipc'
 
 export default function EmployeesPage(): JSX.Element {
   const db = useDb()
@@ -54,6 +56,7 @@ export default function EmployeesPage(): JSX.Element {
   const [saving, setSaving] = useState(false)
   const [busy, setBusy] = useState(false)
   const [zkBusy, setZkBusy] = useState<string | null>(null)
+  const [liveEnrollment, setLiveEnrollment] = useState<{ employeeId: string; status: ZkTecoStatus } | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<Employee | null>(null)
 
   const list = useAsync(async () => {
@@ -115,6 +118,70 @@ export default function EmployeesPage(): JSX.Element {
     return () => window.clearInterval(timer)
   }, [attendance, history])
 
+  const notifyPunch = (name: string, label: string): void => {
+    try {
+      if ('Notification' in window && Notification.permission === 'granted') {
+        new Notification('SUSHI ROLLS — الحضور والانصراف', { body: `${name} ${label}` })
+      }
+    } catch {
+      // Notifications are optional; the in-app toast below is the fallback.
+    }
+    toast.success(`${name} ${label}`)
+  }
+
+  const seenPunches = useRef<Set<string> | null>(null)
+  useEffect(() => {
+    if (!manage) return
+    if ('Notification' in window && Notification.permission === 'default') {
+      void Notification.requestPermission()
+    }
+    let stopped = false
+    const check = async (): Promise<void> => {
+      const { data, error } = await db
+        .from('attendance')
+        .select('id, employee_id, check_out, employees(full_name)')
+        .gte('work_date', today)
+        .order('check_in', { ascending: false })
+        .limit(100)
+      if (error || stopped || !data) return
+      const rows = data as unknown as Array<{ id: string; employee_id: string; check_out: string | null; employees: { full_name: string } | null }>
+      if (seenPunches.current === null) {
+        // Seed both keys for rows that already exist so opening the page does
+        // not fire a notification for every past punch of the day.
+        const seeded = new Set<string>()
+        for (const row of rows) {
+          seeded.add(`in:${row.id}`)
+          if (row.check_out) seeded.add(`out:${row.id}`)
+        }
+        seenPunches.current = seeded
+        return
+      }
+      let fresh = false
+      for (const row of rows) {
+        const inKey = `in:${row.id}`
+        const outKey = `out:${row.id}`
+        if (!seenPunches.current.has(inKey)) {
+          seenPunches.current.add(inKey)
+          notifyPunch(row.employees?.full_name ?? 'موظف', 'سجّل الحضور')
+          fresh = true
+        }
+        if (row.check_out && !seenPunches.current.has(outKey)) {
+          seenPunches.current.add(outKey)
+          notifyPunch(row.employees?.full_name ?? 'موظف', 'سجّل الانصراف')
+          fresh = true
+        }
+      }
+      if (fresh) {
+        void attendance.reload()
+        void history.reload()
+      }
+    }
+    void check()
+    const timer = window.setInterval(() => void check(), 1500)
+    return () => { stopped = true; window.clearInterval(timer) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [db, manage, today])
+
   const myEmployee = useMemo(
     () => (list.data ?? []).find((e) => e.profile_id === profile?.id),
     [list.data, profile?.id]
@@ -160,6 +227,21 @@ export default function EmployeesPage(): JSX.Element {
   }
 
   const zkStatus = (employeeId: string): { label: string; color: string } => {
+    const live = liveEnrollment?.employeeId === employeeId ? liveEnrollment.status.enrollmentStatus : null
+    if (live) {
+      const labels: Record<string, string> = {
+        starting: 'جارٍ تجهيز الجهاز',
+        awaiting_scan: 'اليوزر على الجهاز — سجّل البصمة من قائمة الجهاز',
+        scanning: 'جارٍ قراءة البصمة',
+        enrolled: 'تم تسجيل البصمة',
+        completed: 'تم تسجيل البصمة',
+        failed: 'فشل تسجيل البصمة',
+        timed_out: 'انتهت مهلة التسجيل',
+        cancelled: 'تم إلغاء التسجيل'
+      }
+      const color = live === 'enrolled' || live === 'completed' ? '#3DBE7A' : live === 'failed' || live === 'timed_out' ? '#E36B6B' : '#E4BE54'
+      return { label: labels[live] ?? live, color }
+    }
     const pending = (commands.data ?? []).find((c) => c.employee_id === employeeId && (c.status === 'pending' || c.status === 'processing'))
     if (pending) return { label: pending.type === 'start_enrollment' ? 'في انتظار البصمة' : 'جارٍ التجهيز', color: '#E4BE54' }
     const mapping = (employeeDevices.data ?? []).find((item) => item.employee_id === employeeId)
@@ -176,9 +258,18 @@ export default function EmployeesPage(): JSX.Element {
   ): Promise<void> => {
     setZkBusy(employeeId)
     try {
-      if (action === 'enroll') await startEnrollment(db, employeeId)
-      else await enqueueEmployeeCommand(db, employeeId, 'delete_user', `disable-${employeeId}-${Date.now()}`)
-      toast.success(action === 'enroll' ? 'تم إرسال أمر تسجيل البصمة' : 'تم إرسال أمر الحذف من الجهاز')
+      if (action === 'enroll') {
+        const employee = (list.data ?? []).find((item) => item.id === employeeId)
+        const commandId = await enrollFingerprintLive(db, employeeId, employee?.full_name ?? 'Employee')
+        watchLiveEnrollment(db, employeeId, commandId, (status) => {
+          setLiveEnrollment({ employeeId, status })
+          void employeeDevices.reload()
+        })
+        toast.success('تمت إضافة الموظف على الجهاز — سجّل البصمة من الجهاز والمتابعة لايف')
+      } else {
+        await enqueueEmployeeCommand(db, employeeId, 'delete_user', `disable-${employeeId}-${Date.now()}`)
+        toast.success('تم إرسال أمر الحذف من الجهاز')
+      }
       void employeeDevices.reload()
       void commands.reload()
     } catch (err) {
@@ -213,7 +304,13 @@ export default function EmployeesPage(): JSX.Element {
       if (employeeId && manage) {
         try {
           if (form.id) await enqueueEmployeeCommand(db, employeeId, 'update_user', `update-${employeeId}-${Date.now()}`)
-          else await startEnrollment(db, employeeId)
+          else {
+            const commandId = await enrollFingerprintLive(db, employeeId, form.full_name.trim())
+            watchLiveEnrollment(db, employeeId, commandId, (status) => {
+          setLiveEnrollment({ employeeId, status })
+          void employeeDevices.reload()
+        })
+          }
         } catch (zkError) {
           toast.error(`تم حفظ الموظف، لكن تعذر تجهيز البصمة: ${humanError(zkError)}`)
         }
@@ -310,6 +407,17 @@ export default function EmployeesPage(): JSX.Element {
           {list.loading && !list.data ? (
             <PageLoader />
           ) : (
+            <>
+              {liveEnrollment && (
+                <div className="m-3 rounded-xl border border-brand-gold/30 bg-brand-gold/10 p-3 text-xs">
+                  <div className="font-bold">
+                    تسجيل البصمة — {list.data?.find((e) => e.id === liveEnrollment.employeeId)?.full_name ?? ''}: {zkStatus(liveEnrollment.employeeId).label}
+                  </div>
+                  {liveEnrollment.status.enrollmentMessage && (
+                    <div className="mt-1 text-txt-dim">{liveEnrollment.status.enrollmentMessage}</div>
+                  )}
+                </div>
+              )}
             <TableWrap>
               <thead>
                 <tr>
@@ -401,6 +509,7 @@ export default function EmployeesPage(): JSX.Element {
                 )}
               </tbody>
             </TableWrap>
+            </>
           )}
         </SectionCard>
       )}

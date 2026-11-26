@@ -13,6 +13,8 @@ namespace SushiRolls.ZkTeco
         private readonly object sync = new object();
         private IntPtr handle;
         private bool disposed;
+        private int fingerprintBaseline;
+        private int lastRecordCount = -1;
 
         [DllImport("zkemsdk.dll", CallingConvention = CallingConvention.StdCall, ExactSpelling = true)]
         private static extern IntPtr Z_Connect_USB_STD(ushort vid, int reserved, int pid, int machineNumber);
@@ -57,14 +59,14 @@ namespace SushiRolls.ZkTeco
             [MarshalAs(UnmanagedType.LPStr)] string deviceUserId,
             int fingerIndex);
 
+        // These two SDK calls return a one-byte boolean. Declaring them as int leaves
+        // garbage in the upper bits (e.g. 55567), which made a failed call look successful.
         [DllImport("zkemsdk.dll", CallingConvention = CallingConvention.StdCall, ExactSpelling = true)]
-        private static extern int Z_StartEnrollEx(IntPtr handle,
+        [return: MarshalAs(UnmanagedType.I1)]
+        private static extern bool Z_StartEnrollEx(IntPtr handle,
             [MarshalAs(UnmanagedType.LPStr)] string deviceUserId,
             int fingerIndex,
             int flag);
-
-        [DllImport("zkemsdk.dll", CallingConvention = CallingConvention.StdCall, ExactSpelling = true)]
-        private static extern int Z_StartIdentify(IntPtr handle);
 
         [DllImport("zkemsdk.dll", CallingConvention = CallingConvention.StdCall, ExactSpelling = true)]
         private static extern int SSR_Z_GetUserTmp(IntPtr handle,
@@ -76,8 +78,8 @@ namespace SushiRolls.ZkTeco
         [DllImport("zkemsdk.dll", CallingConvention = CallingConvention.StdCall, ExactSpelling = true)]
         private static extern int Z_CancelOperation(IntPtr handle);
 
-        [DllImport("zkemsdk.dll", CallingConvention = CallingConvention.StdCall, ExactSpelling = true, EntryPoint = "_Z_ReadNewAttLog@4")]
-        private static extern int Z_ReadNewAttLog(IntPtr handle);
+        [DllImport("zkemsdk.dll", CallingConvention = CallingConvention.StdCall, ExactSpelling = true)]
+        private static extern int Z_ReadLog(IntPtr handle, int machineNumber, int dataFlag);
 
         [DllImport("zkemsdk.dll", CallingConvention = CallingConvention.StdCall, ExactSpelling = true)]
         private static extern int Z_SSR_GetLog(IntPtr handle,
@@ -104,7 +106,14 @@ namespace SushiRolls.ZkTeco
                 ThrowIfDisposed();
                 if (handle != IntPtr.Zero) return true;
                 handle = Z_Connect_USB_STD(Vid, 0, Pid, MachineNumber);
-                return handle != IntPtr.Zero;
+                if (handle == IntPtr.Zero) return false;
+                lastRecordCount = -1;
+                // A terminated previous session can leave the LX15 stuck on "Working"
+                // with its scanner disabled. Always bring it back to a clean state on
+                // every connect (startup, service restart or reconnect).
+                Z_EnableDevice(handle);
+                Z_RefreshData(handle);
+                return true;
             }
         }
 
@@ -154,12 +163,17 @@ namespace SushiRolls.ZkTeco
             lock (sync)
             {
                 RequireConnected();
+                // Match the official ZKEM demo sequence exactly: cancel, delete any old
+                // template, then start enrollment. Querying a template before starting
+                // leaves the LX15 in a "Working" state without showing the finger prompt.
                 Z_CancelOperation(handle);
-                var existing = QueryTemplate(deviceUserId, fingerIndex);
-                if (existing.Status == "failed") return false;
-                if (existing.Status == "enrolled" && SSR_Z_DelUserTmpExt(handle, deviceUserId, fingerIndex) <= 0) return false;
-                if (Z_StartEnrollEx(handle, deviceUserId, fingerIndex, 1) <= 0) return false;
-                return Z_StartIdentify(handle) > 0;
+                SSR_Z_DelUserTmpExt(handle, deviceUserId, fingerIndex);
+                // Polling SSR_Z_GetUserTmp while the terminal is in enrollment mode blocks
+                // this handle. The fingerprint counter is a non-blocking completion signal.
+                if (Z_GetDeviceStatus(handle, 3, out fingerprintBaseline) <= 0) return false;
+                // Do NOT call StartIdentify here: on the LX15 it takes the terminal out of
+                // the enrollment prompt and shows "Working" instead of asking for a finger.
+                return Z_StartEnrollEx(handle, deviceUserId, fingerIndex, 0);
             }
         }
 
@@ -169,26 +183,41 @@ namespace SushiRolls.ZkTeco
             lock (sync)
             {
                 RequireConnected();
-                return QueryTemplate(deviceUserId, 0);
+                int count;
+                if (Z_GetDeviceStatus(handle, 3, out count) <= 0)
+                    return new EnrollmentResult(deviceUserId, "failed", 0, "fingerprint counter query failed; SDK error " + LastError);
+                if (count <= fingerprintBaseline) return new EnrollmentResult(deviceUserId, "awaiting_scan", 0, "");
+                // A counter increase is the authoritative enrollment signal on this
+                // firmware: reading the template back with SSR_Z_GetUserTmp fails
+                // with SDK error -13012 even though the registration succeeded.
+                // Templates are never persisted, so the length stays best-effort.
+                return new EnrollmentResult(deviceUserId, "enrolled", BestEffortTemplateLength(deviceUserId, 0), "");
             }
         }
 
-        private EnrollmentResult QueryTemplate(string deviceUserId, int fingerIndex)
+        private int BestEffortTemplateLength(string deviceUserId, int fingerIndex)
         {
-            var buffer = new byte[2048];
-            var pinned = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+            // Diagnostic only: a -13012 read failure must not veto the counter signal.
             try
             {
-                var length = buffer.Length;
-                var result = SSR_Z_GetUserTmp(handle, deviceUserId, fingerIndex, pinned.AddrOfPinnedObject(), ref length);
-                if (result < 0) return new EnrollmentResult(deviceUserId, "failed", 0, "template query failed; SDK error " + LastError);
-                if (result > 0 && length > 0) return new EnrollmentResult(deviceUserId, "enrolled", length, "");
-                return new EnrollmentResult(deviceUserId, "awaiting_scan", 0, "");
+                var buffer = new byte[2048];
+                var pinned = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+                try
+                {
+                    var length = buffer.Length;
+                    var result = SSR_Z_GetUserTmp(handle, deviceUserId, fingerIndex, pinned.AddrOfPinnedObject(), ref length);
+                    if (result > 0 && length > 0) return length;
+                    return 0;
+                }
+                finally
+                {
+                    pinned.Free();
+                    Array.Clear(buffer, 0, buffer.Length);
+                }
             }
-            finally
+            catch (Exception)
             {
-                pinned.Free();
-                Array.Clear(buffer, 0, buffer.Length);
+                return 0;
             }
         }
 
@@ -205,33 +234,76 @@ namespace SushiRolls.ZkTeco
             lock (sync)
             {
                 RequireConnected();
-                if (Z_ReadNewAttLog(handle) <= 0) throw new InvalidOperationException("attendance read failed; SDK error " + LastError);
-                var result = new List<AttendanceEvent>();
-                while (true)
+                // Z_ReadNewAttLog is not reliable on the LX15 firmware (Ver 6.60):
+                // it returns nothing and leaves the terminal on "Working". Use the
+                // proven Z_ReadLog + SSR_Z_GetLog sequence, but only when the device
+                // record counter changed. An idle poll then costs one status call
+                // instead of a full log transfer that freezes the keypad.
+                int recordCount;
+                var countKnown = Z_GetDeviceStatus(handle, 6, out recordCount) > 0;
+                if (countKnown && recordCount == lastRecordCount)
+                    return new AttendanceEvent[0];
+                try
                 {
-                    var userId = new StringBuilder(256);
-                    var verify = 0;
-                    var state = 0;
-                    var year = 0;
-                    var month = 0;
-                    var day = 0;
-                    var hour = 0;
-                    var minute = 0;
-                    var second = 0;
-                    var workCode = 0;
-                    var read = Z_SSR_GetLog(handle, userId, ref verify, ref state, ref year, ref month, ref day,
-                        ref hour, ref minute, ref second, ref workCode);
-                    if (read <= 0) break;
-                    try
+                    var read = Z_ReadLog(handle, 0, 0);
+                    if (read < 0)
+                        throw new InvalidOperationException("attendance log read failed; SDK error " + LastError);
+                    var result = new List<AttendanceEvent>();
+                    while (true)
                     {
-                        result.Add(new AttendanceEvent(userId.ToString(), verify, state, year, month, day, hour, minute, second, workCode));
+                        var userId = new StringBuilder(256);
+                        var verify = 0;
+                        var state = 0;
+                        var year = 0;
+                        var month = 0;
+                        var day = 0;
+                        var hour = 0;
+                        var minute = 0;
+                        var second = 0;
+                        var workCode = 0;
+                        var item = Z_SSR_GetLog(handle, userId, ref verify, ref state, ref year, ref month, ref day,
+                            ref hour, ref minute, ref second, ref workCode);
+                        if (item <= 0) break;
+                        try
+                        {
+                            result.Add(new AttendanceEvent(userId.ToString(), verify, state, year, month, day, hour, minute, second, workCode));
+                        }
+                        catch (ArgumentException)
+                        {
+                            // Keep draining the SDK buffer so one malformed record cannot discard later punches.
+                        }
                     }
-                    catch (ArgumentException)
-                    {
-                        // Keep draining the SDK buffer so one malformed record cannot discard later punches.
-                    }
+                    if (countKnown) lastRecordCount = recordCount;
+                    return result;
                 }
-                return result;
+                finally
+                {
+                    // Z_ReadLog holds the terminal in a data-transfer state. Re-enable
+                    // it so the LCD returns to its normal clock screen immediately.
+                    Z_EnableDevice(handle);
+                }
+            }
+        }
+
+        public int ReadFingerprintCount()
+        {
+            lock (sync)
+            {
+                RequireConnected();
+                int count;
+                if (Z_GetDeviceStatus(handle, 3, out count) <= 0)
+                    throw new InvalidOperationException("fingerprint counter query failed; SDK error " + LastError);
+                return count;
+            }
+        }
+
+        public bool IsAlive()
+        {
+            lock (sync)
+            {
+                if (disposed || handle == IntPtr.Zero) return false;
+                int users;
+                return Z_GetDeviceStatus(handle, 2, out users) > 0;
             }
         }
 
@@ -259,8 +331,13 @@ namespace SushiRolls.ZkTeco
             lock (sync)
             {
                 if (handle == IntPtr.Zero) return;
+                // Release any in-progress terminal operation so the next process
+                // (or the same device on another PC) does not boot into "Working".
+                Z_CancelOperation(handle);
+                Z_EnableDevice(handle);
                 Z_Close(handle);
                 handle = IntPtr.Zero;
+                lastRecordCount = -1;
             }
         }
 

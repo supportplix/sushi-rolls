@@ -16,7 +16,19 @@ namespace SushiRolls.ZkTeco
         private const string SelfTestMarker = "SELF-TEST PASS";
         private static readonly CancellationTokenSource Stop = new CancellationTokenSource();
         private static int exitCode;
+        private static AttendancePoller activePoller;
+        private static readonly object PollerLock = new object();
+        private static bool attendancePaused;
         private static readonly object ConsoleLock = new object();
+
+        // The LX15 accepts one SDK handle and locks up when a second multi-call
+        // operation interrupts an in-progress registration. Enrollment therefore
+        // owns the device exclusively: the attendance poller and the command
+        // queue stay suspended from BeginEnrollment until EndEnrollment.
+        private static bool enrollmentActive;
+        private static readonly Dictionary<string, DateTime> recentlyWrittenUsers = new Dictionary<string, DateTime>();
+        private static readonly TimeSpan RecentlyWrittenTtl = TimeSpan.FromSeconds(120);
+        private static readonly object EnrollmentLock = new object();
 
         private static int Main(string[] args)
         {
@@ -253,6 +265,8 @@ namespace SushiRolls.ZkTeco
                 fake.Connect(7);
                 using (var worker = new EnrollmentWorker(fake, TimeSpan.FromSeconds(1), TimeSpan.FromMilliseconds(1)))
                 {
+                    var steps = new List<string>();
+                    worker.Progress = delegate(EnrollmentProgress progress) { steps.Add(progress.Status); };
                     var create = Command("create_user", "1001", "Test Employee");
                     var created = worker.ExecuteAsync(create, Stop.Token).GetAwaiter().GetResult();
                     Require(created.Status == "completed" && created.Error == "", "create_user command failed: " + created.ToJson());
@@ -271,6 +285,7 @@ namespace SushiRolls.ZkTeco
                     fake.ConfigureSuccessEnrollment();
                     var direct = worker.ExecuteEnrollmentAsync("1001", TimeSpan.FromSeconds(1), Stop.Token).GetAwaiter().GetResult();
                     Require(direct.Status == "enrolled" && direct.TemplateLength == 512, "direct enrollment success failed");
+                    Require(steps.Contains("awaiting_scan") && steps.Contains("enrolled"), "enrollment progress was not reported for each step");
 
                     var cancellable = new FakeDevice();
                     cancellable.Connect(7);
@@ -444,7 +459,9 @@ namespace SushiRolls.ZkTeco
                     if (createResult.Status != "completed") throw new InvalidOperationException("create user failed: " + createResult.Error + "; SDK error " + device.LastError);
                     var result = worker.ExecuteEnrollmentAsync(userId, timeout, Stop.Token).GetAwaiter().GetResult();
                     lock (ConsoleLock) Console.WriteLine(EnrollmentJson.ToJson(result));
-                    if (result.Status != "enrolled" || result.TemplateLength <= 0) exitCode = 1;
+                    // The device fingerprint counter is the enrollment signal; the
+                    // template length is a diagnostic that stays zero on this firmware.
+                    if (result.Status != "enrolled") exitCode = 1;
                 }
                 finally
                 {
@@ -542,6 +559,289 @@ namespace SushiRolls.ZkTeco
             }
         }
 
+        private static void Debug(string message)
+        {
+            // Diagnostics are intentionally disabled in release builds.
+        }
+
+        private static void SetEnrollment(BridgePipeServer server, string commandId, string deviceUserId, string status, string message)
+        {
+            try
+            {
+                var next = server.GetStatus();
+                next.EnrollmentCommandId = String.IsNullOrWhiteSpace(commandId) ? next.EnrollmentCommandId : commandId;
+                next.EnrollmentDeviceUserId = deviceUserId ?? "";
+                next.EnrollmentStatus = status ?? "";
+                next.EnrollmentMessage = message ?? "";
+                next.EnrollmentUpdatedAt = DateTime.UtcNow.ToString("o");
+                server.UpdateStatus(next);
+                server.NotifyStatus();
+            }
+            catch (Exception) { }
+        }
+
+        // Re-reads the terminal counters once, best-effort, so the UI reflects the
+        // real device state (not an SDK acknowledgement) right after enrollment.
+        private static void RefreshCounts(BridgePipeServer server, ZkTecoUsbDevice device)
+        {
+            try
+            {
+                var info = device.ReadInfo();
+                var next = server.GetStatus();
+                next.Users = info.Users;
+                next.Fingerprints = info.Fingerprints;
+                next.Records = info.Records;
+                server.UpdateStatus(next);
+                server.NotifyStatus();
+            }
+            catch (Exception) { }
+        }
+
+        private static void PauseAttendancePolling()
+        {
+            AttendancePoller poller;
+            lock (PollerLock)
+            {
+                attendancePaused = true;
+                poller = activePoller;
+                activePoller = null;
+            }
+            if (poller != null)
+            {
+                try { poller.Dispose(); } catch (Exception) { }
+            }
+        }
+
+        private static void ResumeAttendancePolling()
+        {
+            // The main pipe loop recreates the poller on its next pass. It must not
+            // hold a reference to a disposed poller, otherwise attendance stays off.
+            lock (PollerLock) attendancePaused = false;
+        }
+
+        private static void StopAttendancePolling()
+        {
+            AttendancePoller poller;
+            lock (PollerLock)
+            {
+                poller = activePoller;
+                activePoller = null;
+            }
+            if (poller != null)
+            {
+                try { poller.Dispose(); } catch (Exception) { }
+            }
+        }
+
+        // Claims the device for a single enrollment. Returns false when another
+        // registration is already running so the pipe can answer ENROLLMENT_BUSY
+        // instead of racing two sessions on the same terminal.
+        private static bool BeginEnrollment()
+        {
+            lock (EnrollmentLock)
+            {
+                if (enrollmentActive) return false;
+                enrollmentActive = true;
+                return true;
+            }
+        }
+
+        private static void EndEnrollment()
+        {
+            lock (EnrollmentLock) enrollmentActive = false;
+        }
+
+        private static bool IsEnrollmentActive()
+        {
+            lock (EnrollmentLock) return enrollmentActive;
+        }
+
+        // Records the terminal users this bridge process created itself. The
+        // command queue skips their create_user replay instead of re-running
+        // DisableDevice + SetUserInfo + RefreshData, which reboots the LX15.
+        private static void RememberWrittenUser(string deviceUserId)
+        {
+            lock (EnrollmentLock) recentlyWrittenUsers[deviceUserId ?? ""] = DateTime.UtcNow;
+        }
+
+        private static bool WasUserWrittenRecently(string deviceUserId)
+        {
+            lock (EnrollmentLock)
+            {
+                DateTime writtenAt;
+                if (String.IsNullOrEmpty(deviceUserId) || !recentlyWrittenUsers.TryGetValue(deviceUserId, out writtenAt)) return false;
+                if (DateTime.UtcNow - writtenAt > RecentlyWrittenTtl)
+                {
+                    recentlyWrittenUsers.Remove(deviceUserId);
+                    return false;
+                }
+                return true;
+            }
+        }
+
+        private static void EnsureAttendancePoller(ZkTecoUsbDevice device, Outbox outbox, string serial)
+        {
+            lock (PollerLock)
+            {
+                if (attendancePaused || activePoller != null || Stop.IsCancellationRequested) return;
+                var noPoll = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                    "SUSHI ROLLS", "zkteco", "nopoll.flag");
+                if (File.Exists(noPoll)) return;
+                var poller = new AttendancePoller(device, outbox, serial, AttendancePoller.PollInterval, delegate { });
+                activePoller = poller;
+                poller.RunAsync(Stop.Token);
+            }
+        }
+
+        private static string EnqueueDirectEnrollment(BridgePipeServer server, ZkTecoUsbDevice device, string deviceUserId, string name, int timeoutSeconds)
+        {
+            if (String.IsNullOrWhiteSpace(deviceUserId)) throw new ArgumentException("deviceUserId is required");
+            if (String.IsNullOrWhiteSpace(name)) throw new ArgumentException("name is required");
+            if (!BeginEnrollment()) throw new InvalidOperationException("ENROLLMENT_BUSY");
+            var commandId = Guid.NewGuid().ToString("N");
+            try
+            {
+                Task.Factory.StartNew(delegate
+                {
+                    RunDirectEnrollment(server, device, commandId, deviceUserId, name, timeoutSeconds);
+                }, TaskCreationOptions.LongRunning);
+            }
+            catch (Exception)
+            {
+                EndEnrollment();
+                throw;
+            }
+            return commandId;
+        }
+
+        private static void RunDirectEnrollment(BridgePipeServer server, ZkTecoUsbDevice device, string commandId, string deviceUserId, string name, int timeoutSeconds)
+        {
+            // The SDK allows a single handle per LX15, so enrollment must share the
+            // attendance handle. PollEnrollment uses the non-blocking fingerprint counter.
+            try
+            {
+                PauseAttendancePolling();
+                SetEnrollment(server, commandId, deviceUserId, "starting", "creating device user");
+                if (!device.EnsureUser(deviceUserId, name))
+                {
+                    SetEnrollment(server, commandId, deviceUserId, "failed", "device user creation failed; SDK error " + device.LastError);
+                    return;
+                }
+                RememberWrittenUser(deviceUserId);
+                using (var worker = new EnrollmentWorker(device, TimeSpan.FromSeconds(timeoutSeconds), EnrollmentWorker.PollInterval))
+                {
+                    worker.Progress = delegate(EnrollmentProgress progress)
+                    {
+                        SetEnrollment(server, commandId, progress.DeviceUserId, progress.Status, progress.Message);
+                    };
+                    var result = worker.ExecuteEnrollmentAsync(deviceUserId, Stop.Token).GetAwaiter().GetResult();
+                    SetEnrollment(server, commandId, deviceUserId, result.Status, result.Error);
+                    if (result.Status == "enrolled") RefreshCounts(server, device);
+                }
+            }
+            catch (Exception ex)
+            {
+                SetEnrollment(server, commandId, deviceUserId, "failed", SafeError(ex));
+            }
+            finally
+            {
+                EndEnrollment();
+                ResumeAttendancePolling();
+            }
+        }
+
+        private static string EnqueueWatchEnrollment(BridgePipeServer server, ZkTecoUsbDevice device, string deviceUserId, string name, int timeoutSeconds)
+        {
+            if (String.IsNullOrWhiteSpace(deviceUserId)) throw new ArgumentException("deviceUserId is required");
+            if (String.IsNullOrWhiteSpace(name)) throw new ArgumentException("name is required");
+            if (!BeginEnrollment()) throw new InvalidOperationException("ENROLLMENT_BUSY");
+            var commandId = Guid.NewGuid().ToString("N");
+            try
+            {
+                Task.Factory.StartNew(delegate
+                {
+                    RunWatchEnrollment(server, device, commandId, deviceUserId, name, timeoutSeconds);
+                }, TaskCreationOptions.LongRunning);
+            }
+            catch (Exception)
+            {
+                EndEnrollment();
+                throw;
+            }
+            return commandId;
+        }
+
+        private static void RunWatchEnrollment(BridgePipeServer server, ZkTecoUsbDevice device, string commandId, string deviceUserId, string name, int timeoutSeconds)
+        {
+            // The LX15 firmware refuses remote StartEnrollEx. Create the named user on
+            // the terminal and watch its fingerprint counter while the employee
+            // registers the finger from the device keypad. ReadInfo() performs five
+            // SDK calls; calling it every 750 ms kept the terminal on "Working", so
+            // use the single non-blocking status call instead.
+            try
+            {
+                PauseAttendancePolling();
+                SetEnrollment(server, commandId, deviceUserId, "starting", "creating device user");
+                if (!device.EnsureUser(deviceUserId, name))
+                {
+                    SetEnrollment(server, commandId, deviceUserId, "failed", "device user creation failed; SDK error " + device.LastError);
+                    return;
+                }
+                RememberWrittenUser(deviceUserId);
+                var baseline = device.ReadFingerprintCount();
+                SetEnrollment(server, commandId, deviceUserId, "awaiting_scan", "register the fingerprint from the device menu");
+                var deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
+                while (DateTime.UtcNow < deadline)
+                {
+                    if (Stop.Token.IsCancellationRequested)
+                    {
+                        SetEnrollment(server, commandId, deviceUserId, "cancelled", "stopped");
+                        return;
+                    }
+                    Stop.Token.WaitHandle.WaitOne(2000);
+                    if (device.ReadFingerprintCount() > baseline)
+                    {
+                        SetEnrollment(server, commandId, deviceUserId, "enrolled", "fingerprint registered on the device");
+                        RefreshCounts(server, device);
+                        return;
+                    }
+                }
+                SetEnrollment(server, commandId, deviceUserId, "timed_out", "no fingerprint was registered before timeout");
+            }
+            catch (Exception ex)
+            {
+                SetEnrollment(server, commandId, deviceUserId, "failed", SafeError(ex));
+            }
+            finally
+            {
+                EndEnrollment();
+                ResumeAttendancePolling();
+            }
+        }
+
+        private static void PublishStatus(BridgePipeServer server, string state, DeviceInfo info, string lastSyncAt, Outbox outbox, string message)
+        {
+            var next = server.GetStatus();
+            next.State = state;
+            next.DeviceName = "Attendance Device";
+            next.SerialNumber = info == null ? null : info.Serial;
+            next.Firmware = info == null ? null : info.Firmware;
+            next.Transport = "usb-std";
+            next.ComPort = null;
+            next.LastSeenAt = state == "connected" ? DateTime.UtcNow.ToString("o") : null;
+            next.LastSyncAt = lastSyncAt;
+            if (info != null)
+            {
+                next.Users = info.Users;
+                next.Fingerprints = info.Fingerprints;
+                next.Records = info.Records;
+            }
+            next.PendingOutbox = outbox.ReadPending().Count;
+            next.Message = message;
+            server.UpdateStatus(next);
+            server.NotifyStatus();
+        }
+
         internal static void RunPipe()
         {
             var deviceMutex = new Mutex(false, @"Global\SushiRolls.ZkTeco.Device");
@@ -559,20 +859,36 @@ namespace SushiRolls.ZkTeco
             using (var sync = new SupabaseSync())
             using (var server = new BridgePipeServer())
             {
-                AttendancePoller poller = null;
                 string lastSyncAt = null;
+                DeviceInfo info = null;
+                var infoReadAt = DateTime.MinValue;
+                server.EnrollHandler = delegate(string deviceUserId, string name, int timeoutSeconds)
+                {
+                    return EnqueueDirectEnrollment(server, device, deviceUserId, name, timeoutSeconds);
+                };
+                server.WatchHandler = delegate(string deviceUserId, string name, int timeoutSeconds)
+                {
+                    return EnqueueWatchEnrollment(server, device, deviceUserId, name, timeoutSeconds);
+                };
                 server.Start();
                 while (!Stop.IsCancellationRequested)
                 {
                     try
                     {
                         if (!device.Connect(0)) throw new InvalidOperationException("Z_Connect_USB_STD could not open the LX15");
-                        var info = device.ReadInfo();
-                        if (poller == null)
+                        // Identity changes only on reconnect. ReadInfo() performs five
+                        // SDK calls and calling it every loop keeps the LCD busy, so
+                        // cache it and use the one-call status heartbeat in between.
+                        if (info == null || DateTime.UtcNow - infoReadAt > TimeSpan.FromMinutes(5))
                         {
-                            poller = new AttendancePoller(device, outbox, info.Serial, AttendancePoller.PollInterval, delegate { });
-                            poller.RunAsync(Stop.Token);
+                            info = device.ReadInfo();
+                            infoReadAt = DateTime.UtcNow;
                         }
+                        else if (!device.IsAlive())
+                        {
+                            throw new InvalidOperationException("LX15 stopped responding");
+                        }
+                        EnsureAttendancePoller(device, outbox, info.Serial);
 
                         string syncMessage = null;
                         var config = BridgeConfig.Load();
@@ -582,16 +898,43 @@ namespace SushiRolls.ZkTeco
                             {
                                 sync.HeartbeatAsync(config, Stop.Token).GetAwaiter().GetResult();
                                 sync.PushPendingAsync(outbox, config, Stop.Token).GetAwaiter().GetResult();
-                                var commands = sync.PullCommandsAsync(config, Stop.Token).GetAwaiter().GetResult();
+                                // Enrollment owns the terminal while a finger is being
+                                // registered; pulling commands here used to race a second
+                                // EnsureUser/ReadInfo sequence that rebooted the LX15 and
+                                // wiped the fresh fingerprint.
+                                var commands = IsEnrollmentActive()
+                                    ? new List<DeviceCommand>()
+                                    : sync.PullCommandsAsync(config, Stop.Token).GetAwaiter().GetResult(); Debug("PULL count=" + commands.Count);
                                 using (var worker = new EnrollmentWorker(device))
                                 {
+                                    worker.Progress = delegate(EnrollmentProgress progress)
+                                    {
+                                        SetEnrollment(server, null, progress.DeviceUserId, progress.Status, progress.Message);
+                                    };
                                     foreach (var command in commands)
                                     {
-                                        var result = worker.ExecuteAsync(command, Stop.Token).GetAwaiter().GetResult();
-                                        if (result.Status == "completed")
+                                        // The enrollment flow just created this terminal user;
+                                        // re-running the create command would DisableDevice +
+                                        // SetUserInfo + RefreshData right after the registration.
+                                        if (command.Type == "create_user" && WasUserWrittenRecently(command.DeviceUserId))
+                                        {
+                                            Debug("SKIP create_user replay " + command.Id);
                                             sync.CompleteAsync(config, command, Stop.Token).GetAwaiter().GetResult();
+                                            continue;
+                                        }
+                                        SetEnrollment(server, command.Id, command.DeviceUserId, "starting", command.Type);
+                                        var result = worker.ExecuteAsync(command, Stop.Token).GetAwaiter().GetResult();
+                                        Debug("CMD " + command.Id + " " + command.Type + " result=" + result.Status + " error=" + result.Error);
+                                        if (result.Status == "completed")
+                                        {
+                                            sync.CompleteAsync(config, command, Stop.Token).GetAwaiter().GetResult();
+                                            Debug("FINISH completed " + command.Id);
+                                        }
                                         else
+                                        {
                                             sync.FailAsync(config, command, result.Error, Stop.Token).GetAwaiter().GetResult();
+                                            Debug("FINISH failed " + command.Id + " " + result.Error);
+                                        }
                                     }
                                 }
                                 lastSyncAt = DateTime.UtcNow.ToString("o");
@@ -599,46 +942,26 @@ namespace SushiRolls.ZkTeco
                             catch (Exception syncError)
                             {
                                 syncMessage = "sync delayed: " + SafeError(syncError);
+                                 Debug("SYNC_ERROR " + syncMessage);
                             }
                         }
 
-                        server.UpdateStatus(new BridgeStatus
-                        {
-                            State = "connected",
-                            DeviceName = "Attendance Device",
-                            SerialNumber = info.Serial,
-                            Firmware = info.Firmware,
-                            Transport = "usb-std",
-                            ComPort = null,
-                            LastSeenAt = DateTime.UtcNow.ToString("o"),
-                            LastSyncAt = lastSyncAt,
-                            PendingOutbox = outbox.ReadPending().Count,
-                            Message = syncMessage
-                        });
+                        PublishStatus(server, "connected", info, lastSyncAt, outbox, syncMessage);
                     }
                     catch (Exception ex)
                     {
-                        if (poller != null)
-                        {
-                            poller.Dispose();
-                            poller = null;
-                        }
-                        device.Disconnect();
-                        server.UpdateStatus(new BridgeStatus
-                        {
-                            State = ex is DllNotFoundException ? "driver-missing" : "device-missing",
-                            DeviceName = "Attendance Device",
-                            Transport = "usb-std",
-                            ComPort = null,
-                            LastSeenAt = null,
-                            LastSyncAt = lastSyncAt,
-                            PendingOutbox = outbox.ReadPending().Count,
-                            Message = SafeError(ex)
-                        });
+                        info = null;
+                        infoReadAt = DateTime.MinValue;
+                        StopAttendancePolling();
+                        // Closing the SDK handle while enrollment holds the terminal
+                        // corrupts the registration session; the enrollment worker
+                        // fails on its own and the next pass performs the reconnect.
+                        if (!IsEnrollmentActive()) device.Disconnect();
+                        PublishStatus(server, ex is DllNotFoundException ? "driver-missing" : "device-missing", null, lastSyncAt, outbox, SafeError(ex));
                     }
                     Stop.Token.WaitHandle.WaitOne(5000);
                 }
-                if (poller != null) poller.Dispose();
+                StopAttendancePolling();
             }
             }
             finally
@@ -674,6 +997,11 @@ namespace SushiRolls.ZkTeco
         internal static void RequestStop()
         {
             Stop.Cancel();
+        }
+
+        internal static bool IsStopping
+        {
+            get { return Stop.IsCancellationRequested; }
         }
 
         private static void OnCancelKeyPress(object sender, ConsoleCancelEventArgs e)

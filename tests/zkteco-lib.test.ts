@@ -13,6 +13,7 @@ import {
   createOrRotateDevice,
   deleteEmployeeWithDevice,
   hashDeviceToken,
+  listEmployeeDevices,
   startEnrollment,
   type AttendanceDevice
 } from '../src/renderer/src/lib/zkteco'
@@ -67,6 +68,13 @@ describe('ZKTeco renderer client', () => {
 
   it('hashes tokens with SHA-256', async () => {
     expect(await hashDeviceToken('abc')).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad')
+  })
+
+  it('loads employee device mappings without using a nonexistent creation column', async () => {
+    const order = vi.fn(async () => ({ data: [], error: null }))
+    const db = { from: vi.fn(() => ({ select: () => ({ order }) })) }
+    await expect(listEmployeeDevices(db as never)).resolves.toEqual([])
+    expect(order).toHaveBeenCalledWith('id')
   })
 
   it('creates the device user before starting enrollment', async () => {

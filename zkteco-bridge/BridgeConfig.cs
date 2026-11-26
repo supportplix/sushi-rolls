@@ -95,12 +95,17 @@ namespace SushiRolls.ZkTeco
             {
                 Array.Clear(tokenBytes, 0, tokenBytes.Length);
             }
+            // When Save is called by the SYSTEM service, keep the desktop user SID
+            // already stored so the named pipe stays reachable by the Electron app.
+            var previous = Load();
+            var interactiveSid = previous.InteractiveUserSid;
+            if (String.IsNullOrWhiteSpace(interactiveSid)) interactiveSid = WindowsIdentity.GetCurrent().User.Value;
             var data = new StoredConfig
             {
                 SupabaseUrl = supabaseUrl.Trim().TrimEnd('/'),
                 ProtectedToken = Convert.ToBase64String(protectedBytes),
                 Timezone = timezone,
-                InteractiveUserSid = WindowsIdentity.GetCurrent().User.Value
+                InteractiveUserSid = interactiveSid
             };
             var json = new JavaScriptSerializer().Serialize(data);
             var temp = FilePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
@@ -114,7 +119,7 @@ namespace SushiRolls.ZkTeco
                 }
                 if (File.Exists(FilePath)) File.Replace(temp, FilePath, null);
                 else File.Move(temp, FilePath);
-                HardenAcl();
+                HardenAcl(interactiveSid);
             }
             finally
             {
@@ -122,7 +127,7 @@ namespace SushiRolls.ZkTeco
             }
         }
 
-        private static void HardenAcl()
+        private static void HardenAcl(string interactiveSid)
         {
             var security = new FileSecurity();
             security.SetAccessRuleProtection(true, false);
@@ -130,6 +135,15 @@ namespace SushiRolls.ZkTeco
                 FileSystemRights.FullControl, AccessControlType.Allow));
             security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
                 FileSystemRights.FullControl, AccessControlType.Allow));
+            if (!String.IsNullOrWhiteSpace(interactiveSid))
+            {
+                try
+                {
+                    security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(interactiveSid),
+                        FileSystemRights.FullControl, AccessControlType.Allow));
+                }
+                catch (ArgumentException) { }
+            }
             File.SetAccessControl(FilePath, security);
         }
 

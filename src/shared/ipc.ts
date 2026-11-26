@@ -127,6 +127,29 @@ export interface ZkTecoStatus {
   lastSyncAt: string | null
   pendingOutbox: number
   message: string | null
+  enrollmentCommandId?: string | null
+  enrollmentDeviceUserId?: string | null
+  enrollmentStatus?: 'starting' | 'awaiting_scan' | 'scanning' | 'enrolled' | 'failed' | 'timed_out' | 'completed' | 'cancelled' | null
+  enrollmentMessage?: string | null
+  enrollmentUpdatedAt?: string | null
+  /** Live counters read from the terminal; null until the first identity query. */
+  users?: number | null
+  fingerprints?: number | null
+  records?: number | null
+}
+
+export interface ZkTecoEnrollArgs {
+  deviceUserId: string
+  name: string
+  timeoutSeconds?: number
+  watchOnly?: boolean
+  accessToken: string
+}
+
+export interface ZkTecoEnrollResult {
+  ok: boolean
+  commandId?: string
+  error?: string
 }
 
 export interface ZkTecoServiceResult {
@@ -146,7 +169,8 @@ export interface ZkTecoApi {
   health: () => Promise<ZkTecoStatus>
   configure: (args: ZkTecoConfigureArgs) => Promise<ZkTecoServiceResult>
   service: (args: { action: 'install' | 'start' | 'stop' | 'remove' | 'agent-install' | 'agent-remove'; accessToken: string }) => Promise<ZkTecoServiceResult>
-  onStatus: (callback: (status: ZkTecoStatus) => void) => void
+  enroll: (args: ZkTecoEnrollArgs) => Promise<ZkTecoEnrollResult>
+  onStatus: (callback: (status: ZkTecoStatus) => void) => () => void
 }
 
 export interface SushiApi {

@@ -1,8 +1,8 @@
 {
   "name": "sushi-rolls",
-  "version": "1.0.6",
+  "version": "1.0.27",
   "private": true,
-  "description": "SUSHI ROLLS — Premium Restaurant Management & POS",
+  "description": "SUSHI ROLLS â€” Premium Restaurant Management & POS",
   "author": "Osama",
   "main": "./out/main/index.js",
   "scripts": {
