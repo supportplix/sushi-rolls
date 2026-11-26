@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { CalendarCheck, Clock4, Fingerprint, Link2, Loader2, LogIn, LogOut, Pencil, Plus, RefreshCw, Trash2, UserRoundCheck, Users } from 'lucide-react'
+import { CalendarCheck, CheckCircle2, CircleAlert, Clock4, Fingerprint, Link2, Loader2, LogIn, LogOut, Pencil, Plus, RefreshCw, Trash2, UserRoundCheck, Users } from 'lucide-react'
 import { useAuth, useDb } from '@/lib/auth'
 import { useAsync, useRealtimeRefresh } from '@/lib/hooks'
 import { humanError } from '@/lib/errors'
@@ -250,7 +250,8 @@ export default function EmployeesPage(): JSX.Element {
       const color = live === 'enrolled' || live === 'completed' ? '#3DBE7A' : live === 'failed' || live === 'timed_out' ? '#E36B6B' : '#E4BE54'
       return { label: labels[live] ?? live, color }
     }
-    const pending = (commands.data ?? []).find((c) => c.employee_id === employeeId && (c.status === 'pending' || c.status === 'processing'))
+    const employeeCommands = (commands.data ?? []).filter((c) => c.employee_id === employeeId)
+    const pending = employeeCommands.find((c) => c.status === 'pending' || c.status === 'processing')
     if (pending) return { label: pending.type === 'start_enrollment' ? 'في انتظار البصمة' : 'جارٍ التجهيز', color: '#E4BE54' }
     const latestCommand = employeeCommands[0]
     if (latestCommand?.status === 'failed' || latestCommand?.status === 'timed_out') {
