@@ -48,12 +48,23 @@ describe('ZKTeco bridge manager', () => {
       lastSeenAt: null,
       lastSyncAt: null,
       pendingOutbox: 0,
-      message: null
+      message: null,
+      enrollmentCommandId: null,
+      enrollmentDeviceUserId: null,
+      enrollmentStatus: null,
+      enrollmentMessage: null,
+      enrollmentUpdatedAt: null
     })
   })
 
   it('rejects service actions without an access token', async () => {
     const manager = new ZkTecoBridgeManager(() => undefined)
     await expect(manager.service('install', '')).resolves.toEqual({ ok: false, error: 'FORBIDDEN' })
+  })
+
+  it('rejects direct enrollment without an access token', async () => {
+    const manager = new ZkTecoBridgeManager(() => undefined)
+    await expect(manager.enroll({ deviceUserId: '1001', name: 'Test', accessToken: '' }))
+      .resolves.toEqual({ ok: false, error: 'FORBIDDEN' })
   })
 })

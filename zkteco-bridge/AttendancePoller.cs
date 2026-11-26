@@ -7,7 +7,10 @@ namespace SushiRolls.ZkTeco
 {
     public sealed class AttendancePoller : IDisposable
     {
-        public static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(2);
+        // Idle polls only query the device record counter; the full log transfer
+        // runs when that counter changes. Three seconds keeps punches near-live
+        // without holding the terminal on "Working".
+        public static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(3);
         private readonly IZkTecoDevice device;
         private readonly Outbox outbox;
         private readonly string deviceSerial;

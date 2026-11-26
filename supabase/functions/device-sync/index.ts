@@ -331,11 +331,18 @@ async function pushEvents(
     payload_hash: event.payload_hash,
     resolution_status: 'pending'
   }))
-  const inserted = responseData<Array<{ id: string }>>(await db.from('attendance_events')
-    .insert(rows, { onConflict: 'device_id,payload_hash', ignoreDuplicates: true })
-    .select('id')
-    .limit(MAX_EVENTS))
-  if (!Array.isArray(inserted)) throw new HttpError(500, 'INVALID_DATABASE_RESULT')
+  // Idempotent ingest: a re-read punch can arrive with a new event_id but an
+  // existing (device_id, payload_hash). A plain insert with a single conflict
+  // target turns that into 23505 for the whole batch, so the RPC skips any
+  // conflicting row and reports what it actually inserted.
+  const ingested = responseData<{ inserted: number; ids: string[] }>(await db.rpc('zkteco_ingest_events', {
+    p_device_id: deviceId,
+    p_events: rows
+  }))
+  if (!ingested || typeof ingested.inserted !== 'number' || !Array.isArray(ingested.ids)) {
+    throw new HttpError(500, 'INVALID_RPC_RESULT')
+  }
+  const insertedCount = ingested.inserted
 
   // A failed previous call may have committed the raw insert but not its RPC.
   // Re-reading pending rows heals that state, oldest first, without replaying
@@ -355,8 +362,8 @@ async function pushEvents(
     .maybeSingle())
   return {
     ok: true,
-    inserted: inserted.length,
-    duplicates: events.length - inserted.length,
+    inserted: insertedCount,
+    duplicates: events.length - insertedCount,
     events: results
   }
 }

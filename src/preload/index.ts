@@ -12,7 +12,9 @@ import type {
   UpdateStatus,
   ZkTecoServiceResult,
   ZkTecoStatus,
-  ZkTecoConfigureArgs
+  ZkTecoConfigureArgs,
+  ZkTecoEnrollArgs,
+  ZkTecoEnrollResult
 } from '@shared/ipc'
 
 const api: SushiApi = {
@@ -39,8 +41,11 @@ const api: SushiApi = {
     health: () => ipcRenderer.invoke('zkteco:health') as Promise<ZkTecoStatus>,
     configure: (args: ZkTecoConfigureArgs) => ipcRenderer.invoke('zkteco:configure', args) as Promise<ZkTecoServiceResult>,
     service: (args) => ipcRenderer.invoke('zkteco:service', args) as Promise<ZkTecoServiceResult>,
+    enroll: (args: ZkTecoEnrollArgs) => ipcRenderer.invoke('zkteco:enroll', args) as Promise<ZkTecoEnrollResult>,
     onStatus: (callback) => {
-      ipcRenderer.on('zkteco:status', (_event, status: ZkTecoStatus) => callback(status))
+      const listener = (_event: unknown, status: ZkTecoStatus) => callback(status)
+      ipcRenderer.on('zkteco:status', listener)
+      return () => ipcRenderer.removeListener('zkteco:status', listener)
     }
   },
   updates: {

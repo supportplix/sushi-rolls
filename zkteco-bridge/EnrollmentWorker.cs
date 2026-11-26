@@ -37,6 +37,25 @@ namespace SushiRolls.ZkTeco
         }
     }
 
+    public sealed class EnrollmentProgress
+    {
+        public string DeviceUserId;
+        public string Status;
+        public string Message;
+        public string UpdatedAt;
+
+        public Dictionary<string, string> ToFields()
+        {
+            return new Dictionary<string, string>
+            {
+                { "device_user_id", Json.Escape(DeviceUserId ?? "") },
+                { "status", Json.Escape(Status ?? "") },
+                { "message", Json.Escape(Message ?? "") },
+                { "updated_at", Json.Escape(UpdatedAt ?? "") }
+            };
+        }
+    }
+
     public sealed class EnrollmentWorker : IDisposable
     {
         public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(60);
@@ -45,6 +64,7 @@ namespace SushiRolls.ZkTeco
         private readonly IZkTecoDevice device;
         private readonly TimeSpan timeout;
         private readonly TimeSpan pollInterval;
+        public Action<EnrollmentProgress> Progress;
 
         public EnrollmentWorker(IZkTecoDevice device) : this(device, DefaultTimeout, PollInterval) { }
 
@@ -130,7 +150,11 @@ namespace SushiRolls.ZkTeco
             try
             {
                 if (!device.StartEnrollment(deviceUserId, 0))
+                {
+                    Report(deviceUserId, "failed", "device enrollment start failed; SDK error " + device.LastError);
                     return new EnrollmentResult(deviceUserId, "failed", 0, "device enrollment start failed");
+                }
+                Report(deviceUserId, "awaiting_scan", "place your finger on the device");
 
                 var deadline = DateTime.UtcNow + timeout;
                 var result = device.PollEnrollment(deviceUserId);
@@ -138,10 +162,15 @@ namespace SushiRolls.ZkTeco
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     if (DateTime.UtcNow >= deadline)
+                    {
+                        Report(deviceUserId, "timed_out", "no template before timeout");
                         return new EnrollmentResult(deviceUserId, "timed_out", 0, "no template before timeout");
+                    }
+                    if (result.Status == "scanning") Report(deviceUserId, "scanning", "reading fingerprint");
                     await Task.Delay(pollInterval, cancellationToken).ConfigureAwait(false);
                     result = device.PollEnrollment(deviceUserId);
                 }
+                Report(deviceUserId, result.Status, result.Error);
                 return result;
             }
             catch (OperationCanceledException)
@@ -163,26 +192,50 @@ namespace SushiRolls.ZkTeco
             var deadline = DateTime.UtcNow + timeout;
             try
             {
+                Report(command.DeviceUserId, "awaiting_scan", "place your finger on the device");
                 var result = device.PollEnrollment(command.DeviceUserId);
                 while (result.Status == "awaiting_scan" || result.Status == "scanning")
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     if (DateTime.UtcNow >= deadline)
+                    {
+                        Report(command.DeviceUserId, "timed_out", "no template before timeout");
                         return new CommandResult(command.Id, command.Type, "timed_out", "no template before timeout");
+                    }
+                    if (result.Status == "scanning") Report(command.DeviceUserId, "scanning", "reading fingerprint");
                     await Task.Delay(pollInterval, cancellationToken).ConfigureAwait(false);
                     result = device.PollEnrollment(command.DeviceUserId);
                 }
 
-                var status = result.Status == "enrolled" && result.TemplateLength > 0
+                // The fingerprint counter increase (not a template read) is the
+                // enrollment signal, so "enrolled" alone completes the command.
+                var status = result.Status == "enrolled"
                     ? "completed"
                     : (result.Status == "timed_out" ? "timed_out" : "failed");
                 var error = status == "completed" ? "" : (String.IsNullOrWhiteSpace(result.Error) ? "template was not enrolled" : result.Error);
+                Report(command.DeviceUserId, status == "completed" ? "enrolled" : status, error);
                 return new CommandResult(command.Id, command.Type, status, error);
             }
             finally
             {
                 CancelPendingEnrollment();
             }
+        }
+
+        private void Report(string deviceUserId, string status, string message)
+        {
+            if (Progress == null) return;
+            try
+            {
+                Progress(new EnrollmentProgress
+                {
+                    DeviceUserId = deviceUserId ?? "",
+                    Status = status ?? "",
+                    Message = String.IsNullOrWhiteSpace(message) ? "" : message,
+                    UpdatedAt = DateTime.UtcNow.ToString("o")
+                });
+            }
+            catch (Exception) { }
         }
 
         private static CommandResult Failure(DeviceCommand command, string error)

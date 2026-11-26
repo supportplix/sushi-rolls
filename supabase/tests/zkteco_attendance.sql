@@ -409,6 +409,35 @@ select throws_ok(
       where idempotency_key = 'manager-enroll'$$,
   '23514', null, 'command payload is immutable'
 );
+insert into public.device_commands (
+  id, device_id, employee_id, type, payload, idempotency_key, created_by
+) values (
+  '60000000-0000-4000-8000-000000000002',
+  '30000000-0000-4000-8000-000000000001',
+  '20000000-0000-4000-8000-000000000002',
+  'delete_user', '{"device_user_id":"1002"}', 'delete-orphan-test',
+  '10000000-0000-4000-8000-000000000001'
+);
+select throws_ok(
+  $$update public.device_commands set employee_id = null
+      where id = '60000000-0000-4000-8000-000000000002'$$,
+  '23514', null, 'direct command employee unlinking remains immutable while the employee exists'
+);
+select lives_ok(
+  $$delete from public.employees where id = '20000000-0000-4000-8000-000000000002'$$,
+  'deleting an employee preserves command history and clears its employee link'
+);
+select results_eq(
+  $$select employee_id is null from public.device_commands
+      where id = '60000000-0000-4000-8000-000000000002'$$,
+  array[true::boolean], 'deleted employee command keeps its audit row without a dangling employee'
+);
+select throws_ok(
+  $$update public.device_commands
+      set employee_id = '20000000-0000-4000-8000-000000000001'
+      where id = '60000000-0000-4000-8000-000000000002'$$,
+  '23514', null, 'direct command employee reassignment remains immutable'
+);
 
 update public.attendance_devices set attendance_mode = 'raw_only'
 where id = '30000000-0000-4000-8000-000000000001';

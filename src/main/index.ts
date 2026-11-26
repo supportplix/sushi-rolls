@@ -87,6 +87,13 @@ const zktecoServiceSchema = z.object({
   accessToken: z.string().min(1).max(4000)
 })
 
+const zktecoEnrollSchema = z.object({
+  deviceUserId: z.string().regex(/^\d{1,24}$/),
+  name: z.string().min(1).max(100),
+  timeoutSeconds: z.number().int().min(5).max(300).optional(),
+  accessToken: z.string().min(1).max(4000)
+})
+
 function configPath(): string {
   return join(app.getPath('userData'), 'config.json')
 }
@@ -228,6 +235,12 @@ ipcMain.handle('zkteco:configure', async (_e, raw): Promise<ZkTecoServiceResult>
   if (!parsed.success) return { ok: false, error: 'INVALID_ARGS' }
   if (!await zktecoBridge.authorize(parsed.data.accessToken)) return { ok: false, error: 'FORBIDDEN' }
   return zktecoBridge.configure(parsed.data.supabaseUrl, parsed.data.deviceToken, parsed.data.timezone)
+})
+
+ipcMain.handle('zkteco:enroll', async (_e, raw) => {
+  const parsed = zktecoEnrollSchema.safeParse(raw)
+  if (!parsed.success) return { ok: false, error: 'INVALID_ARGS' }
+  return zktecoBridge.enroll(parsed.data)
 })
 
 ipcMain.handle('zkteco:service', async (_e, raw): Promise<ZkTecoServiceResult> => {

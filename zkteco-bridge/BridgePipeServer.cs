@@ -23,6 +23,21 @@ namespace SushiRolls.ZkTeco
         public string LastSyncAt;
         public int PendingOutbox;
         public string Message;
+        public string EnrollmentCommandId;
+        public string EnrollmentDeviceUserId;
+        public string EnrollmentStatus;
+        public string EnrollmentMessage;
+        public string EnrollmentUpdatedAt;
+        // Live device counters from ReadInfo(); keep the UI honest about what is
+        // actually registered on the terminal instead of trusting SDK acknowledgements.
+        public int? Users;
+        public int? Fingerprints;
+        public int? Records;
+
+        public BridgeStatus Copy()
+        {
+            return (BridgeStatus)MemberwiseClone();
+        }
 
         public Dictionary<string, object> ToJson()
         {
@@ -37,7 +52,15 @@ namespace SushiRolls.ZkTeco
                 { "lastSeenAt", LastSeenAt },
                 { "lastSyncAt", LastSyncAt },
                 { "pendingOutbox", PendingOutbox },
-                { "message", Message }
+                { "message", Message },
+                { "enrollmentCommandId", EnrollmentCommandId },
+                { "enrollmentDeviceUserId", EnrollmentDeviceUserId },
+                { "enrollmentStatus", EnrollmentStatus },
+                { "enrollmentMessage", EnrollmentMessage },
+                { "enrollmentUpdatedAt", EnrollmentUpdatedAt },
+                { "users", Users },
+                { "fingerprints", Fingerprints },
+                { "records", Records }
             };
         }
     }
@@ -49,9 +72,16 @@ namespace SushiRolls.ZkTeco
         private readonly CancellationTokenSource stop = new CancellationTokenSource();
         private readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = 1024 * 1024 };
         private NamedPipeServerStream server;
+        private NamedPipeServerStream client;
+        private readonly object writeLock = new object();
         private Task worker;
         private BridgeStatus status = new BridgeStatus();
         private bool disposed;
+
+        // Returns a command id. The enrollment itself runs on a worker task so the pipe
+        // stays responsive and can stream progress for every step.
+        public Func<string, string, int, string> EnrollHandler;
+        public Func<string, string, int, string> WatchHandler;
 
         private static NamedPipeServerStream CreateServer()
         {
@@ -84,6 +114,11 @@ namespace SushiRolls.ZkTeco
             lock (sync) status = next;
         }
 
+        public BridgeStatus GetStatus()
+        {
+            lock (sync) return status.Copy();
+        }
+
         private async Task AcceptLoop()
         {
             while (!stop.IsCancellationRequested)
@@ -97,45 +132,97 @@ namespace SushiRolls.ZkTeco
                 try
                 {
                     await current.WaitForConnectionAsync(stop.Token).ConfigureAwait(false);
-                    using (current)
-                    {
-                        await HandleClient(current).ConfigureAwait(false);
-                    }
-                    lock (sync)
-                    {
-                        if (!disposed) server = CreateServer();
-                    }
+                    await HandleClient(current).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) { return; }
                 catch (IOException) { }
-                catch (ObjectDisposedException) { return; }
+                catch (ObjectDisposedException) { }
+                finally
+                {
+                    try { current.Dispose(); } catch (ObjectDisposedException) { }
+                }
+                // Recreate the listening end after every connection cycle, including
+                // abrupt client disconnects. The single pipe instance must be released
+                // before a new one can bind the same name, so always dispose first.
+                lock (sync)
+                {
+                    if (!disposed) server = CreateServer();
+                }
             }
         }
 
         private async Task HandleClient(NamedPipeServerStream pipe)
         {
-            var buffer = new StringBuilder();
-            var bytes = new byte[4096];
-            while (!stop.IsCancellationRequested)
+            lock (sync) client = pipe;
+            try
             {
-                var read = await pipe.ReadAsync(bytes, 0, bytes.Length, stop.Token).ConfigureAwait(false);
-                if (read == 0) return;
-                buffer.Append(Encoding.UTF8.GetString(bytes, 0, read));
-                var newline = buffer.ToString().IndexOf('\n');
-                while (newline >= 0)
+                var buffer = new StringBuilder();
+                var bytes = new byte[4096];
+                while (!stop.IsCancellationRequested)
                 {
-                    var line = buffer.ToString(0, newline).Trim();
-                    buffer.Remove(0, newline + 1);
-                    if (line.Length > 0)
+                    var read = await pipe.ReadAsync(bytes, 0, bytes.Length, stop.Token).ConfigureAwait(false);
+                    if (read == 0) return;
+                    buffer.Append(Encoding.UTF8.GetString(bytes, 0, read));
+                    var newline = buffer.ToString().IndexOf('\n');
+                    while (newline >= 0)
                     {
-                        var response = HandleRequest(line);
-                        var data = Encoding.UTF8.GetBytes(json.Serialize(response) + "\n");
-                        await pipe.WriteAsync(data, 0, data.Length, stop.Token).ConfigureAwait(false);
-                        await pipe.FlushAsync(stop.Token).ConfigureAwait(false);
+                        var line = buffer.ToString(0, newline).Trim();
+                        buffer.Remove(0, newline + 1);
+                        if (line.Length > 0)
+                        {
+                            var response = HandleRequest(line);
+                            Write(pipe, json.Serialize(response));
+                        }
+                        newline = buffer.ToString().IndexOf('\n');
                     }
-                    newline = buffer.ToString().IndexOf('\n');
                 }
             }
+            finally
+            {
+                lock (sync)
+                {
+                    if (client == pipe) client = null;
+                }
+            }
+        }
+
+        private void Write(NamedPipeServerStream pipe, string text)
+        {
+            var data = Encoding.UTF8.GetBytes(text + "\n");
+            lock (writeLock)
+            {
+                pipe.Write(data, 0, data.Length);
+                pipe.Flush();
+            }
+        }
+
+        // Pushes the current status to the connected app without waiting for a request.
+        public void NotifyStatus()
+        {
+            NamedPipeServerStream target;
+            string text;
+            lock (sync)
+            {
+                target = client;
+                if (target == null) return;
+                text = json.Serialize(new Dictionary<string, object>
+                {
+                    { "type", "status" },
+                    { "status", status.ToJson() }
+                });
+            }
+            try
+            {
+                var data = Encoding.UTF8.GetBytes(text + "\n");
+                lock (writeLock)
+                {
+                    if (!target.IsConnected) return;
+                    target.Write(data, 0, data.Length);
+                    target.Flush();
+                }
+            }
+            catch (IOException) { }
+            catch (ObjectDisposedException) { }
         }
 
         private Dictionary<string, object> HandleRequest(string line)
@@ -158,6 +245,33 @@ namespace SushiRolls.ZkTeco
                     return new Dictionary<string, object> { { "id", id }, { "ok", false }, { "error", "INVALID_CONFIG" } };
                 }
             }
+            if (type == "enroll" || type == "watch_enrollment")
+            {
+                var deviceUserId = request.ContainsKey("deviceUserId") ? Convert.ToString(request["deviceUserId"]) ?? "" : "";
+                var name = request.ContainsKey("name") ? Convert.ToString(request["name"]) ?? "" : "";
+                var timeoutSeconds = 60;
+                if (request.ContainsKey("timeoutSeconds"))
+                    Int32.TryParse(Convert.ToString(request["timeoutSeconds"]), out timeoutSeconds);
+                if (timeoutSeconds < 5) timeoutSeconds = 5;
+                if (timeoutSeconds > 300) timeoutSeconds = 300;
+                var handler = type == "watch_enrollment" ? WatchHandler : EnrollHandler;
+                if (handler == null)
+                    return new Dictionary<string, object> { { "id", id }, { "ok", false }, { "error", "ENROLL_NOT_READY" } };
+                try
+                {
+                    var commandId = handler(deviceUserId, name, timeoutSeconds);
+                    return new Dictionary<string, object>
+                    {
+                        { "id", id },
+                        { "ok", true },
+                        { "commandId", commandId ?? "" }
+                    };
+                }
+                catch (Exception ex)
+                {
+                    return new Dictionary<string, object> { { "id", id }, { "ok", false }, { "error", SafeError(ex) } };
+                }
+            }
             if (type == "get_status" || type == "get_health")
             {
                 BridgeStatus snapshot;
@@ -175,6 +289,11 @@ namespace SushiRolls.ZkTeco
                 { "ok", false },
                 { "error", "UNKNOWN_REQUEST" }
             };
+        }
+
+        private static string SafeError(Exception error)
+        {
+            return error == null || String.IsNullOrWhiteSpace(error.Message) ? "enrollment failed" : error.Message;
         }
 
         public void Dispose()

@@ -106,6 +106,9 @@ export default function ZKTecoSettingsCard(): JSX.Element {
             <div>آخر مزامنة: {status.lastSyncAt ? new Date(status.lastSyncAt).toLocaleString('ar-EG') : '—'}</div>
             <div>أحداث مؤجلة: {status.pendingOutbox}</div>
             <div>فرق الساعة: {device?.clock_drift_seconds ?? '—'} ث</div>
+            <div>مستخدمو الجهاز: {status.users ?? '—'}</div>
+            <div>بصمات مسجلة: {status.fingerprints ?? '—'}</div>
+            <div>سجلات الحضور: {status.records ?? '—'}</div>
           </div>
           {status.message && <div className="text-[11px] text-brand-redSoft">{status.message}</div>}
           <Button

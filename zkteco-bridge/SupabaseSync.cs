@@ -12,7 +12,7 @@ namespace SushiRolls.ZkTeco
 {
     internal sealed class SupabaseSync : IDisposable
     {
-        private readonly HttpClient http = new HttpClient();
+        private readonly HttpClient http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
         private readonly JavaScriptSerializer json = new JavaScriptSerializer { MaxJsonLength = 4 * 1024 * 1024 };
 
         static SupabaseSync()
@@ -53,11 +53,24 @@ namespace SushiRolls.ZkTeco
                         { "payload_hash", entry.PayloadHash }
                     });
                 }
-                var response = await PostAsync(config, "push_events", new Dictionary<string, object>
+                Dictionary<string, object> response;
+                try
                 {
-                    { "action", "push_events" },
-                    { "events", batch }
-                }, cancellationToken).ConfigureAwait(false);
+                    response = await PostAsync(config, "push_events", new Dictionary<string, object>
+                    {
+                        { "action", "push_events" },
+                        { "events", batch }
+                    }, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception pushError)
+                {
+                    // 409 means the events were already committed by a previous attempt.
+                    // Treat it as delivered so the local outbox can be drained.
+                    if (!pushError.Message.Contains("409")) throw;
+                    for (var index = 0; index < count; index++) outbox.MarkSynced(pending[index].EventId);
+                    outbox.Compact();
+                    return;
+                }
                 if (!response.ContainsKey("ok") || !Convert.ToBoolean(response["ok"], CultureInfo.InvariantCulture))
                     throw new InvalidOperationException("device-sync rejected attendance events");
                 for (var index = 0; index < count; index++) outbox.MarkSynced(pending[index].EventId);
@@ -72,7 +85,8 @@ namespace SushiRolls.ZkTeco
                 { "action", "pull_commands" },
                 { "limit", 50 }
             }, cancellationToken).ConfigureAwait(false);
-            var raw = response.ContainsKey("commands") ? response["commands"] as object[] : null;
+            // JavaScriptSerializer materialises JSON arrays as ArrayList, not object[].
+            var raw = response.ContainsKey("commands") ? response["commands"] as System.Collections.IEnumerable : null;
             var result = new List<DeviceCommand>();
             if (raw == null) return result;
             foreach (var item in raw)
