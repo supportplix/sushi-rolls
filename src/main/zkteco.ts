@@ -4,7 +4,7 @@ import { createConnection, Socket } from 'net'
 import { join } from 'path'
 import { existsSync, readFileSync, appendFileSync } from 'fs'
 import { z } from 'zod'
-import type { ZkTecoEnrollArgs, ZkTecoEnrollResult, ZkTecoServiceResult, ZkTecoStatus } from '@shared/ipc'
+import type { ZkTecoEnrollArgs, ZkTecoEnrollCheckResult, ZkTecoEnrollResult, ZkTecoServiceResult, ZkTecoStatus } from '@shared/ipc'
 
 const PIPE_NAME = '\\\\.\\pipe\\SushiRolls.ZkTeco'
 
@@ -392,6 +392,21 @@ export class ZkTecoBridgeManager {
       return { ok: true, commandId: response.commandId ?? '' }
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : 'ENROLL_FAILED' }
+    }
+  }
+
+  /**
+   * Single completion probe for a running watch enrollment. The bridge stays
+   * silent while the employee registers the finger from the device menu; the
+   * app triggers this check once the employee steps back from the terminal.
+   */
+  async checkEnrollment(commandId: string): Promise<ZkTecoEnrollCheckResult> {
+    try {
+      const response = await this.request('check_enrollment', { commandId }) as { ok?: boolean; status?: string; count?: number; baseline?: number; error?: string }
+      if (response.ok === false) return { ok: false, error: response.error ?? 'CHECK_FAILED' }
+      return { ok: true, status: response.status, count: response.count, baseline: response.baseline }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : 'CHECK_FAILED' }
     }
   }
 

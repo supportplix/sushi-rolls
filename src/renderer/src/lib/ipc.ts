@@ -81,6 +81,7 @@ function webFallback(): SushiApi {
       service: async () => ({ ok: false, error: NO_ELECTRON }),
       configure: async () => ({ ok: false, error: NO_ELECTRON }),
       enroll: async () => ({ ok: false, error: NO_ELECTRON }),
+      checkEnrollment: async () => ({ ok: false, error: NO_ELECTRON }),
       onStatus: () => () => undefined
     },
     updates: {

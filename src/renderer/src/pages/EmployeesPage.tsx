@@ -25,6 +25,7 @@ import { DatePicker } from '@/components/ui/datepicker'
 import { Dialog, ConfirmDialog } from '@/components/ui/dialog'
 import { useToast } from '@/components/ui/toast'
 import {
+  checkLiveEnrollment,
   enqueueEmployeeCommand,
   deleteEmployeeWithDevice,
   enrollFingerprintLive,
@@ -56,11 +57,61 @@ export default function EmployeesPage(): JSX.Element {
   const [saving, setSaving] = useState(false)
   const [busy, setBusy] = useState(false)
   const [zkBusy, setZkBusy] = useState<string | null>(null)
-  const [liveEnrollment, setLiveEnrollment] = useState<{ employeeId: string; status: ZkTecoStatus } | null>(null)
+  const [liveEnrollment, setLiveEnrollment] = useState<{ employeeId: string; commandId: string; status: ZkTecoStatus | null } | null>(null)
+  const liveEnrollmentRef = useRef<{ employeeId: string; commandId: string; status: ZkTecoStatus | null } | null>(null)
+  const [checkingEnrollment, setCheckingEnrollment] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<Employee | null>(null)
   const [enrollmentTarget, setEnrollmentTarget] = useState<{ id: string; full_name: string } | null>(null)
   const [enrollmentCommandId, setEnrollmentCommandId] = useState<string | null>(null)
   const [enrollmentError, setEnrollmentError] = useState<string | null>(null)
+
+  useEffect(() => {
+    liveEnrollmentRef.current = liveEnrollment
+  }, [liveEnrollment])
+
+  const isTerminalLiveStatus = (status: ZkTecoStatus | null): boolean => {
+    const step = status?.enrollmentStatus
+    return step === 'enrolled' || step === 'completed' || step === 'failed' || step === 'timed_out' || step === 'cancelled'
+  }
+
+  /**
+   * The bridge stays silent while the employee is at the terminal registering
+   * the finger from the device menu. This probe asks for one immediate check;
+   * the watch enrollment then streams the outcome back through zkteco:status.
+   */
+  const runLiveCheck = async (commandId: string, silent = false): Promise<boolean> => {
+    setCheckingEnrollment(true)
+    try {
+      const result = await checkLiveEnrollment(commandId)
+      if (!result.ok) {
+        if (!silent) toast.error(humanError(result.error))
+        return false
+      }
+      if (result.status === 'enrolled' || result.status === 'completed') {
+        if (!silent) toast.success('تم تسجيل البصمة بنجاح')
+        void employeeDevices.reload()
+        return true
+      }
+      if (!silent) toast.error('لم يتم تسجيل بصمة جديدة — تأكد أن الموظف سجّل البصمة من قائمة الجهاز ثم أعد التحقق')
+      return false
+    } catch (err) {
+      if (!silent) toast.error(humanError(err))
+      return false
+    } finally {
+      setCheckingEnrollment(false)
+    }
+  }
+
+  // Final probe when the page closes: a registration that just completed on the
+  // terminal must not wait for the next app session to be picked up.
+  useEffect(() => {
+    return () => {
+      const live = liveEnrollmentRef.current
+      if (live?.commandId && !isTerminalLiveStatus(live.status)) {
+        void checkLiveEnrollment(live.commandId).catch(() => undefined)
+      }
+    }
+  }, [])
 
   const list = useAsync(async () => {
     const { data, error } = await db.from('employees').select('*').order('full_name')
@@ -235,7 +286,7 @@ export default function EmployeesPage(): JSX.Element {
   }
 
   const zkStatus = (employeeId: string): { label: string; color: string } => {
-    const live = liveEnrollment?.employeeId === employeeId ? liveEnrollment.status.enrollmentStatus : null
+    const live = liveEnrollment?.employeeId === employeeId ? liveEnrollment.status?.enrollmentStatus : null
     if (live) {
       const labels: Record<string, string> = {
         starting: 'جارٍ تجهيز الجهاز',
@@ -274,8 +325,9 @@ export default function EmployeesPage(): JSX.Element {
       if (action === 'enroll') {
         const employee = (list.data ?? []).find((item) => item.id === employeeId)
         const commandId = await enrollFingerprintLive(db, employeeId, employee?.full_name ?? 'Employee')
+        setLiveEnrollment({ employeeId, commandId, status: null })
         watchLiveEnrollment(db, employeeId, commandId, (status) => {
-          setLiveEnrollment({ employeeId, status })
+          setLiveEnrollment((prev) => ({ employeeId, commandId, status }))
           void employeeDevices.reload()
         })
         toast.success('تمت إضافة الموظف على الجهاز — سجّل البصمة من الجهاز والمتابعة لايف')
@@ -325,8 +377,9 @@ export default function EmployeesPage(): JSX.Element {
           if (form.id) await enqueueEmployeeCommand(db, employeeId, 'update_user', `update-${employeeId}-${Date.now()}`)
           else {
             const commandId = await enrollFingerprintLive(db, employeeId, form.full_name.trim())
+            setLiveEnrollment({ employeeId, commandId, status: null })
             watchLiveEnrollment(db, employeeId, commandId, (status) => {
-          setLiveEnrollment({ employeeId, status })
+          setLiveEnrollment((prev) => ({ employeeId, commandId, status }))
           void employeeDevices.reload()
         })
           }
@@ -372,6 +425,12 @@ export default function EmployeesPage(): JSX.Element {
       <Dialog
         open={enrollmentTarget !== null}
         onClose={() => {
+          // Final probe before dismissing: the employee may have just finished
+          // registering on the terminal and the bridge only reports it on demand.
+          const live = liveEnrollmentRef.current
+          if (live?.commandId && !isTerminalLiveStatus(live.status)) {
+            void runLiveCheck(live.commandId, true)
+          }
           setEnrollmentTarget(null)
           setEnrollmentCommandId(null)
           setEnrollmentError(null)
@@ -499,10 +558,23 @@ export default function EmployeesPage(): JSX.Element {
             <>
               {liveEnrollment && (
                 <div className="m-3 rounded-xl border border-brand-gold/30 bg-brand-gold/10 p-3 text-xs">
-                  <div className="font-bold">
-                    تسجيل البصمة — {list.data?.find((e) => e.id === liveEnrollment.employeeId)?.full_name ?? ''}: {zkStatus(liveEnrollment.employeeId).label}
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="font-bold">
+                      تسجيل البصمة — {list.data?.find((e) => e.id === liveEnrollment.employeeId)?.full_name ?? ''}: {zkStatus(liveEnrollment.employeeId).label}
+                    </div>
+                    {liveEnrollment.commandId && !isTerminalLiveStatus(liveEnrollment.status) && (
+                      <Button
+                        size="sm"
+                        variant="gold"
+                        disabled={checkingEnrollment}
+                        icon={checkingEnrollment ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Fingerprint className="h-3.5 w-3.5" />}
+                        onClick={() => void runLiveCheck(liveEnrollment.commandId)}
+                      >
+                        تحقق من التسجيل
+                      </Button>
+                    )}
                   </div>
-                  {liveEnrollment.status.enrollmentMessage && (
+                  {liveEnrollment.status?.enrollmentMessage && (
                     <div className="mt-1 text-txt-dim">{liveEnrollment.status.enrollmentMessage}</div>
                   )}
                 </div>

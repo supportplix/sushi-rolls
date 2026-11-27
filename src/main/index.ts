@@ -12,11 +12,13 @@ import type {
   PrintResult,
   SaveFileArgs,
   SaveResult,
-  UpdateStatus
+  UpdateStatus,
+  ZkTecoEnrollCheckResult,
+  ZkTecoServiceResult,
+  ZkTecoStatus
 } from '@shared/ipc'
 import { receiptPageSize } from '@shared/ipc'
 import { ZkTecoBridgeManager } from './zkteco'
-import type { ZkTecoServiceResult, ZkTecoStatus } from '@shared/ipc'
 
 const isDev = !!process.env['ELECTRON_RENDERER_URL']
 const RENDERER_URL = process.env['ELECTRON_RENDERER_URL'] || ''
@@ -241,6 +243,11 @@ ipcMain.handle('zkteco:enroll', async (_e, raw) => {
   const parsed = zktecoEnrollSchema.safeParse(raw)
   if (!parsed.success) return { ok: false, error: 'INVALID_ARGS' }
   return zktecoBridge.enroll(parsed.data)
+})
+
+ipcMain.handle('zkteco:check-enrollment', async (_e, raw): Promise<ZkTecoEnrollCheckResult> => {
+  if (typeof raw !== 'string' || !raw) return { ok: false, error: 'INVALID_ARGS' }
+  return zktecoBridge.checkEnrollment(raw)
 })
 
 ipcMain.handle('zkteco:service', async (_e, raw): Promise<ZkTecoServiceResult> => {

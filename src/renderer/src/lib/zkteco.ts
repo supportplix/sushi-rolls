@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { ZkTecoStatus } from '@shared/ipc'
+import type { ZkTecoEnrollCheckResult, ZkTecoStatus } from '@shared/ipc'
 import { api } from '@/lib/ipc'
 
 export interface AttendanceDevice {
@@ -146,27 +146,19 @@ export async function enrollFingerprintLive(
   const accessToken = session.session?.access_token
   if (!accessToken) throw new Error('NO_SESSION')
 
-  let mapping = await db
-    .from('employee_devices')
-    .select('device_user_id')
-    .eq('employee_id', employeeId)
-    .maybeSingle()
-  if (mapping.error) throw mapping.error
-
-  if (!mapping.data?.device_user_id) {
-    await enqueueEmployeeCommand(db, employeeId, 'create_user', `create-live-${employeeId}-${Date.now()}`)
-    for (let attempt = 0; attempt < 40; attempt += 1) {
-      mapping = await db
-        .from('employee_devices')
-        .select('device_user_id')
-        .eq('employee_id', employeeId)
-        .maybeSingle()
-      if (mapping.error) throw mapping.error
-      if (mapping.data?.device_user_id) break
-      await new Promise((resolve) => setTimeout(resolve, 250))
-    }
+  // Reserve the terminal user id up front instead of enqueueing a create_user
+  // command. The old flow could run two user-creation sequences on the single
+  // SDK handle at once (the command queue plus the watch's own EnsureUser) and
+  // lock the LX15; the reservation is a plain database write and leaves the
+  // watch enrollment as the sole owner of terminal user creation.
+  const { data: reserved, error: reserveError } = await db.rpc('zkteco_reserve_device_user', {
+    p_employee_id: employeeId
+  })
+  if (reserveError) {
+    if ((reserveError as { code?: string }).code === 'PGRST202') throw new Error('ZKTECO_SCHEMA_NOT_DEPLOYED')
+    throw reserveError
   }
-  const deviceUserId = mapping.data?.device_user_id
+  const deviceUserId = reserved?.device_user_id as string | undefined
   if (!deviceUserId) throw new Error('DEVICE_MAPPING_MISSING')
 
   await db.rpc('zkteco_update_enrollment', { p_employee_id: employeeId, p_status: 'awaiting_scan' })
@@ -179,6 +171,16 @@ export async function enrollFingerprintLive(
   })
   if (!result.ok) throw new Error(result.error ?? 'ENROLL_FAILED')
   return result.commandId ?? ''
+}
+
+/**
+ * Probes a running watch enrollment exactly once. The bridge stays silent
+ * while the employee is at the terminal; call this after they step away so a
+ * completed registration is picked up immediately instead of waiting for the
+ * next periodic poll.
+ */
+export async function checkLiveEnrollment(commandId: string): Promise<ZkTecoEnrollCheckResult> {
+  return api.zkteco.checkEnrollment(commandId)
 }
 
 /** Streams bridge enrollment steps and persists the terminal state in Supabase. */

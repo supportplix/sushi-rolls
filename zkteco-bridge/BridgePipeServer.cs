@@ -82,6 +82,27 @@ namespace SushiRolls.ZkTeco
         // stays responsive and can stream progress for every step.
         public Func<string, string, int, string> EnrollHandler;
         public Func<string, string, int, string> WatchHandler;
+        // Single-shot completion probe for a running watch enrollment. The watch
+        // itself never polls the terminal while the employee is in the device menu.
+        public Func<string, EnrollmentCheck> CheckHandler;
+
+        public sealed class EnrollmentCheck
+        {
+            public readonly bool Ok;
+            public readonly string Status;
+            public readonly string Error;
+            public readonly int? Count;
+            public readonly int? Baseline;
+
+            public EnrollmentCheck(bool ok, string status, string error, int? count, int? baseline)
+            {
+                Ok = ok;
+                Status = status ?? "";
+                Error = error ?? "";
+                Count = count;
+                Baseline = baseline;
+            }
+        }
 
         private static NamedPipeServerStream CreateServer()
         {
@@ -266,6 +287,26 @@ namespace SushiRolls.ZkTeco
                         { "ok", true },
                         { "commandId", commandId ?? "" }
                     };
+                }
+                catch (Exception ex)
+                {
+                    return new Dictionary<string, object> { { "id", id }, { "ok", false }, { "error", SafeError(ex) } };
+                }
+            }
+            if (type == "check_enrollment")
+            {
+                var commandId = request.ContainsKey("commandId") ? Convert.ToString(request["commandId"]) ?? "" : "";
+                if (CheckHandler == null)
+                    return new Dictionary<string, object> { { "id", id }, { "ok", false }, { "error", "ENROLL_NOT_READY" } };
+                try
+                {
+                    var check = CheckHandler(commandId);
+                    if (!check.Ok)
+                        return new Dictionary<string, object> { { "id", id }, { "ok", false }, { "error", check.Error } };
+                    var response = new Dictionary<string, object> { { "id", id }, { "ok", true }, { "status", check.Status } };
+                    if (check.Count.HasValue) response["count"] = check.Count.Value;
+                    if (check.Baseline.HasValue) response["baseline"] = check.Baseline.Value;
+                    return response;
                 }
                 catch (Exception ex)
                 {

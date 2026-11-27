@@ -67,4 +67,9 @@ describe('ZKTeco bridge manager', () => {
     await expect(manager.enroll({ deviceUserId: '1001', name: 'Test', accessToken: '' }))
       .resolves.toEqual({ ok: false, error: 'FORBIDDEN' })
   })
+
+  it('reports a failed enrollment check when the bridge is not connected', async () => {
+    const manager = new ZkTecoBridgeManager(() => undefined)
+    await expect(manager.checkEnrollment('watch-1')).resolves.toMatchObject({ ok: false })
+  })
 })

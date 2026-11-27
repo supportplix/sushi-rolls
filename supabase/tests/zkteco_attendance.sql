@@ -546,5 +546,56 @@ select results_eq(
   array['disabled:true'::text], 'failed disable or delete keeps attendance mapping disabled'
 );
 
+-- zkteco_reserve_device_user reserves the terminal user id without dispatching
+-- a create_user command, so a watch enrollment is the single owner of terminal
+-- user creation and two DisableDevice+SetUserInfo sequences cannot race on one
+-- SDK handle.
+insert into public.employees (id, full_name) values ('20000000-0000-4000-8000-000000000005', 'ZK Reserve Employee');
+
+reset role;
+set local role anon;
+select throws_ok(
+  $$select public.zkteco_reserve_device_user('20000000-0000-4000-8000-000000000005'::uuid)$$,
+  '42501', null, 'anonymous clients cannot reserve a device user id'
+);
+
+reset role;
+set local role authenticated;
+set local request.jwt.claim.sub = '10000000-0000-4000-8000-000000000004';
+select throws_ok(
+  $$select public.zkteco_reserve_device_user('20000000-0000-4000-8000-000000000005'::uuid)$$,
+  '42501', null, 'reserving a device user id requires employees.manage'
+);
+
+reset role;
+set local role authenticated;
+set local request.jwt.claim.sub = '10000000-0000-4000-8000-000000000002';
+select results_eq(
+  $$select public.zkteco_reserve_device_user('20000000-0000-4000-8000-000000000005'::uuid) ->> 'device_user_id'$$,
+  array['1005'::text], 'reservation allocates the next stable device user id'
+);
+select results_eq(
+  $$select enrollment_status from public.employee_devices
+      where employee_id = '20000000-0000-4000-8000-000000000005'$$,
+  array['pending'::text], 'reservation leaves the mapping pending enrollment'
+);
+select results_eq(
+  $$select public.zkteco_reserve_device_user('20000000-0000-4000-8000-000000000005'::uuid) ->> 'device_user_id'$$,
+  array['1005'::text], 'replaying the reservation returns the same device user id'
+);
+select is_empty(
+  $$select 1 from public.device_commands
+      where employee_id = '20000000-0000-4000-8000-000000000005'$$,
+  'reservation never dispatches a device command (no create_user race)'
+);
+select throws_ok(
+  $$select public.zkteco_reserve_device_user('20000000-0000-4000-8000-000000000999'::uuid)$$,
+  'P0002', null, 'reserving an unknown employee fails'
+);
+select results_eq(
+  $$select count(*) from public.audit_logs where action = 'zkteco.reserve_device_user'$$,
+  array[2::bigint], 'each reservation replay is audited'
+);
+
 select * from finish();
 rollback;

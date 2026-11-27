@@ -152,6 +152,16 @@ export interface ZkTecoEnrollResult {
   error?: string
 }
 
+/** Result of the single-shot completion probe for a running watch enrollment. */
+export interface ZkTecoEnrollCheckResult {
+  ok: boolean
+  /** "enrolled" when the fingerprint counter rose, else "awaiting_scan". */
+  status?: string
+  count?: number
+  baseline?: number
+  error?: string
+}
+
 export interface ZkTecoServiceResult {
   ok: boolean
   error?: string
@@ -170,6 +180,7 @@ export interface ZkTecoApi {
   configure: (args: ZkTecoConfigureArgs) => Promise<ZkTecoServiceResult>
   service: (args: { action: 'install' | 'start' | 'stop' | 'remove' | 'agent-install' | 'agent-remove'; accessToken: string }) => Promise<ZkTecoServiceResult>
   enroll: (args: ZkTecoEnrollArgs) => Promise<ZkTecoEnrollResult>
+  checkEnrollment: (commandId: string) => Promise<ZkTecoEnrollCheckResult>
   onStatus: (callback: (status: ZkTecoStatus) => void) => () => void
 }
 

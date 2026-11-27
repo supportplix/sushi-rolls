@@ -30,6 +30,26 @@ namespace SushiRolls.ZkTeco
         private static readonly TimeSpan RecentlyWrittenTtl = TimeSpan.FromSeconds(120);
         private static readonly object EnrollmentLock = new object();
 
+        // A watch enrollment stays silent once the employee starts registering a
+        // finger from the device menu: any SDK call while the LX15 is in its local
+        // menu throws the terminal back to "Working" and the registration fails.
+        // The app therefore asks for a completion check instead of the bridge
+        // polling. The session registry links a check request to its watch task.
+        private sealed class WatchSession
+        {
+            public readonly ManualResetEventSlim Pulse = new ManualResetEventSlim(false);
+            public string CommandId;
+            public string DeviceUserId;
+            public int Baseline;
+            public DateTime Deadline;
+            public volatile bool Enrolled;
+            public volatile bool Aborted;
+            public int LastCount;
+        }
+        private static readonly Dictionary<string, WatchSession> WatchSessions = new Dictionary<string, WatchSession>();
+        private static readonly object WatchLock = new object();
+
+
         private static int Main(string[] args)
         {
             Console.CancelKeyPress += OnCancelKeyPress;
@@ -774,10 +794,13 @@ namespace SushiRolls.ZkTeco
         private static void RunWatchEnrollment(BridgePipeServer server, ZkTecoUsbDevice device, string commandId, string deviceUserId, string name, int timeoutSeconds)
         {
             // The LX15 firmware refuses remote StartEnrollEx. Create the named user on
-            // the terminal and watch its fingerprint counter while the employee
-            // registers the finger from the device keypad. ReadInfo() performs five
-            // SDK calls; calling it every 750 ms kept the terminal on "Working", so
-            // use the single non-blocking status call instead.
+            // the terminal and let the employee register the finger from the device
+            // keypad. While the terminal is in its local menu ANY SDK call bumps it
+            // back to "Working" and the registration dies, so after the baseline is
+            // captured the watch stays completely silent: no polling. The app pings
+            // check_enrollment when the employee steps back from the terminal, and
+            // only then does the bridge perform a single status query.
+            WatchSession session = null;
             try
             {
                 PauseAttendancePolling();
@@ -788,25 +811,52 @@ namespace SushiRolls.ZkTeco
                     return;
                 }
                 RememberWrittenUser(deviceUserId);
-                var baseline = device.ReadFingerprintCount();
-                SetEnrollment(server, commandId, deviceUserId, "awaiting_scan", "register the fingerprint from the device menu");
-                var deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
-                while (DateTime.UtcNow < deadline)
+                // EnsureUser runs DisableDevice + SetUserInfo + RefreshData, which reboots
+                // the LX15. Wait the reboot out before sampling the fingerprint counter.
+                var baseline = ReadFingerprintCountWithRetry(device, 15, 500);
+                session = new WatchSession();
+                session.CommandId = commandId;
+                session.DeviceUserId = deviceUserId;
+                session.Baseline = baseline;
+                session.Deadline = DateTime.UtcNow.AddSeconds(timeoutSeconds);
+                session.LastCount = baseline;
+                lock (WatchLock) WatchSessions[commandId] = session;
+                SetEnrollment(server, commandId, deviceUserId, "awaiting_scan", "register the fingerprint from the device menu, then press verify in the app");
+                while (true)
                 {
-                    if (Stop.Token.IsCancellationRequested)
+                    if (Stop.IsCancellationRequested)
                     {
                         SetEnrollment(server, commandId, deviceUserId, "cancelled", "stopped");
                         return;
                     }
-                    Stop.Token.WaitHandle.WaitOne(2000);
-                    if (device.ReadFingerprintCount() > baseline)
+                    var remaining = session.Deadline - DateTime.UtcNow;
+                    if (remaining <= TimeSpan.Zero)
                     {
-                        SetEnrollment(server, commandId, deviceUserId, "enrolled", "fingerprint registered on the device");
-                        RefreshCounts(server, device);
+                        SetEnrollment(server, commandId, deviceUserId, "timed_out", "no fingerprint was registered before timeout");
                         return;
                     }
+                    // Chunked wait keeps the watch responsive to cancellation while
+                    // never touching the device itself.
+                    var wait = TimeSpan.FromMilliseconds(Math.Min(2000, remaining.TotalMilliseconds));
+                    if (session.Pulse.Wait(wait))
+                    {
+                        session.Pulse.Reset();
+                        if (session.Aborted)
+                        {
+                            SetEnrollment(server, commandId, deviceUserId, "cancelled", "stopped");
+                            return;
+                        }
+                        if (session.Enrolled)
+                        {
+                            SetEnrollment(server, commandId, deviceUserId, "enrolled", "fingerprint registered on the device");
+                            RefreshCounts(server, device);
+                            return;
+                        }
+                        // A check that did not confirm the fingerprint yet; tell the UI
+                        // the watch is still alive and waiting.
+                        SetEnrollment(server, commandId, deviceUserId, "awaiting_scan", "no fingerprint yet; register it from the device menu and press verify again");
+                    }
                 }
-                SetEnrollment(server, commandId, deviceUserId, "timed_out", "no fingerprint was registered before timeout");
             }
             catch (Exception ex)
             {
@@ -814,10 +864,67 @@ namespace SushiRolls.ZkTeco
             }
             finally
             {
+                if (session != null)
+                {
+                    lock (WatchLock) WatchSessions.Remove(session.CommandId);
+                    session.Aborted = true;
+                    try { session.Pulse.Set(); } catch (Exception) { }
+                    session.Pulse.Dispose();
+                }
                 EndEnrollment();
                 ResumeAttendancePolling();
             }
         }
+
+        // Performs the single completion signal for a watch enrollment: one
+        // non-blocking fingerprint counter query (with short retries for a busy
+        // terminal) compared against the session baseline.
+        private static BridgePipeServer.EnrollmentCheck CheckWatchEnrollment(BridgePipeServer server, ZkTecoUsbDevice device, string commandId)
+        {
+            WatchSession session = null;
+            bool found;
+            lock (WatchLock) found = WatchSessions.TryGetValue(commandId ?? "", out session);
+            if (!found || session == null)
+                return new BridgePipeServer.EnrollmentCheck(false, "", "NO_ACTIVE_ENROLLMENT", null, null);
+            if (session.Enrolled)
+                return new BridgePipeServer.EnrollmentCheck(true, "enrolled", "", session.LastCount, session.Baseline);
+            try
+            {
+                var count = ReadFingerprintCountWithRetry(device, 3, 300);
+                session.LastCount = count;
+                if (count > session.Baseline)
+                {
+                    // The watch task reports "enrolled" to every listener.
+                    session.Enrolled = true;
+                    try { session.Pulse.Set(); } catch (Exception) { }
+                    return new BridgePipeServer.EnrollmentCheck(true, "enrolled", "", count, session.Baseline);
+                }
+                // Not confirmed yet: wake the watch so it re-announces awaiting_scan,
+                // then answer the caller with the current facts.
+                try { session.Pulse.Set(); } catch (Exception) { }
+                return new BridgePipeServer.EnrollmentCheck(true, "awaiting_scan", "", count, session.Baseline);
+            }
+            catch (Exception ex)
+            {
+                return new BridgePipeServer.EnrollmentCheck(false, "", SafeError(ex), session.LastCount, session.Baseline);
+            }
+        }
+
+        private static int ReadFingerprintCountWithRetry(ZkTecoUsbDevice device, int attempts, int delayMs)
+        {
+            Exception last = null;
+            for (var i = 0; i < attempts; i++)
+            {
+                try { return device.ReadFingerprintCount(); }
+                catch (Exception ex)
+                {
+                    last = ex;
+                    if (i + 1 < attempts) Thread.Sleep(delayMs);
+                }
+            }
+            throw last;
+        }
+
 
         private static void PublishStatus(BridgePipeServer server, string state, DeviceInfo info, string lastSyncAt, Outbox outbox, string message)
         {
@@ -870,6 +977,10 @@ namespace SushiRolls.ZkTeco
                 {
                     return EnqueueWatchEnrollment(server, device, deviceUserId, name, timeoutSeconds);
                 };
+                server.CheckHandler = delegate(string commandId)
+                {
+                    return CheckWatchEnrollment(server, device, commandId);
+                };
                 server.Start();
                 while (!Stop.IsCancellationRequested)
                 {
@@ -879,14 +990,21 @@ namespace SushiRolls.ZkTeco
                         // Identity changes only on reconnect. ReadInfo() performs five
                         // SDK calls and calling it every loop keeps the LCD busy, so
                         // cache it and use the one-call status heartbeat in between.
-                        if (info == null || DateTime.UtcNow - infoReadAt > TimeSpan.FromMinutes(5))
+                        // While an enrollment watch owns the terminal (the employee is
+                        // registering a finger from the device menu) no SDK call is
+                        // allowed at all, not even the heartbeat: it kicks the LX15
+                        // back to "Working" and aborts the registration.
+                        if (!IsEnrollmentActive())
                         {
-                            info = device.ReadInfo();
-                            infoReadAt = DateTime.UtcNow;
-                        }
-                        else if (!device.IsAlive())
-                        {
-                            throw new InvalidOperationException("LX15 stopped responding");
+                            if (info == null || DateTime.UtcNow - infoReadAt > TimeSpan.FromMinutes(5))
+                            {
+                                info = device.ReadInfo();
+                                infoReadAt = DateTime.UtcNow;
+                            }
+                            else if (!device.IsAlive())
+                            {
+                                throw new InvalidOperationException("LX15 stopped responding");
+                            }
                         }
                         EnsureAttendancePoller(device, outbox, info.Serial);
 

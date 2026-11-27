@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.ServiceProcess;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -45,13 +46,34 @@ namespace SushiRolls.ZkTeco
                 }
                 catch (Exception ex)
                 {
-                    Log("worker error: " + ex.Message);
+                    // "One or more errors occurred." alone never identifies the failing
+                    // call, so record the type, the full chain and the stack.
+                    Log("worker error: " + DescribeException(ex));
                 }
                 if (Program.IsStopping) break;
                 Log("bridge worker exited; retrying in 5 seconds");
                 Thread.Sleep(TimeSpan.FromSeconds(5));
             }
             Log("bridge worker stopped");
+        }
+
+        private static string DescribeException(Exception ex)
+        {
+            if (ex == null) return "<null>";
+            var text = new StringBuilder();
+            text.Append(ex.GetType().FullName).Append(": ").Append(ex.Message);
+            var current = ex;
+            while (current.InnerException != null)
+            {
+                current = current.InnerException;
+                text.Append(" -> ").Append(current.GetType().FullName).Append(": ").Append(current.Message);
+            }
+            if (ex.StackTrace != null)
+            {
+                text.AppendLine();
+                text.Append(ex.StackTrace);
+            }
+            return text.ToString();
         }
         private static void Log(string message)
         {
