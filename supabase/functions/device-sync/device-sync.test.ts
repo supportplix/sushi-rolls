@@ -191,6 +191,26 @@ function fakeDatabase(): { db: Database; state: FakeState } {
     },
     rpc(name, args): Promise<QueryResult> {
       state.rpcCalls.push({ name, args })
+      if (name === 'zkteco_ingest_events') {
+        // Mirrors the set-based RPC: skip rows whose (device_id, payload_hash)
+        // already exists and report what was actually inserted.
+        const incoming = (args.p_events ?? []) as Array<Record<string, unknown>>
+        const ids: string[] = []
+        for (const row of incoming) {
+          const exists = state.events.some((entry) =>
+            entry.device_id === args.p_device_id && entry.payload_hash === row.payload_hash
+          )
+          if (exists) continue
+          state.events.push({
+            ...row,
+            id: String(row.id),
+            device_id: String(args.p_device_id),
+            resolution_status: 'pending'
+          } as StoredEvent)
+          ids.push(String(row.id))
+        }
+        return Promise.resolve(result({ inserted: ids.length, ids }))
+      }
       if (name === 'apply_attendance_event') {
         const event = state.events.find((entry) => entry.id === args.p_event_id)
         if (!event) return Promise.resolve(result(null, { code: 'P0002' }))
@@ -359,10 +379,13 @@ Deno.test('push sorts actual instants rather than offset timestamp strings', asy
     ]
   }))
   assertEquals(response.status, 200)
-  assertEquals(state.rpcCalls.map((call) => call.args.p_event_id), [
-    '50000000-0000-4000-8000-000000000002',
-    '50000000-0000-4000-8000-000000000001'
-  ])
+  assertEquals(
+    state.rpcCalls.filter((call) => call.name === 'apply_attendance_event').map((call) => call.args.p_event_id),
+    [
+      '50000000-0000-4000-8000-000000000002',
+      '50000000-0000-4000-8000-000000000001'
+    ]
+  )
 })
 
 Deno.test('a raw insert left pending by an RPC failure is healed on retry', async () => {
