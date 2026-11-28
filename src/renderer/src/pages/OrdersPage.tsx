@@ -18,6 +18,7 @@ import { useAuth, useDb } from '@/lib/auth'
 import { useAsync, useDebounced, useRealtimeRefresh } from '@/lib/hooks'
 import { humanError } from '@/lib/errors'
 import { fmtDateTime, money, num, parseNum, rangeFor, type Period } from '@/lib/format'
+import { canSubmitPayment } from '@/lib/payments'
 import type { Order, OrderItem, Payment } from '@/lib/types'
 import { t } from '@/i18n'
 import {
@@ -84,6 +85,7 @@ export default function OrdersPage(): JSX.Element {
       const { from } = rangeFor(period)
       q = q.gte('created_at', from.toISOString())
     }
+    // Commas would split the or() filter into a malformed third clause.
     const term = debounced.trim().replace(/[%,()]/g, '')
     if (term) {
       if (/^\d+$/.test(term)) q = q.eq('order_number', Number(term))
@@ -160,7 +162,8 @@ export default function OrdersPage(): JSX.Element {
     }
   }
 
-  const remaining = detail ? Number(detail.order.total) - detail.payments.reduce((s, p) => s + Number(p.amount), 0) : 0
+  const paidTotal = detail ? detail.payments.reduce((s, p) => s + Number(p.amount), 0) : 0
+  const remaining = detail ? Number(detail.order.total) - paidTotal : 0
 
   const actions = useMemo(() => {
     if (!detail) return []
@@ -480,10 +483,9 @@ export default function OrdersPage(): JSX.Element {
           <>
             <Button variant="ghost" onClick={() => setPayOpen(false)}>{t('common.cancel')}</Button>
             <Button
-              disabled={busy}
+              disabled={busy || !canSubmitPayment(remaining, payAmount)}
               onClick={async () => {
-                if (!detail) return
-                if (parseNum(payAmount) <= 0) return
+                if (!detail || !canSubmitPayment(remaining, payAmount)) return
                 setBusy(true)
                 try {
                   const { error } = await db.rpc('pay_order', {
@@ -567,7 +569,7 @@ export default function OrdersPage(): JSX.Element {
           <>
             <Button variant="ghost" onClick={() => setRefundOpen(false)}>{t('common.cancel')}</Button>
             <Button
-              disabled={busy || parseNum(refundAmount) <= 0}
+              disabled={busy || parseNum(refundAmount) <= 0 || parseNum(refundAmount) > paidTotal}
               onClick={async () => {
                 if (!detail) return
                 setBusy(true)
@@ -595,7 +597,7 @@ export default function OrdersPage(): JSX.Element {
       >
         <div className="space-y-3">
           <Field label={t('orders.refundAmount')}>
-            <input autoFocus className="input" inputMode="decimal" value={refundAmount} onChange={(e) => setRefundAmount(e.target.value)} placeholder="0" />
+            <input autoFocus className="input" inputMode="decimal" max={paidTotal} value={refundAmount} onChange={(e) => setRefundAmount(e.target.value)} placeholder="0" />
           </Field>
           <Field label={t('orders.refundReason')}>
             <input className="input" value={refundReason} onChange={(e) => setRefundReason(e.target.value)} />

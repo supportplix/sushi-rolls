@@ -47,6 +47,7 @@ export default function CustomersPage(): JSX.Element {
 
   const list = useAsync(async () => {
     let q = db.from('customers').select('*').order('total_spending', { ascending: false }).limit(500)
+    // Commas would split the or() filter into a malformed third clause.
     const term = search.trim().replace(/[%,()]/g, '')
     if (term) q = q.or(`name.ilike.%${term}%,phone.ilike.%${term}%`)
     const { data, error } = await q

@@ -16,6 +16,7 @@ export function humanError(err: unknown, includeDetails = false): string {
     (typeof err === 'string' ? err : '')
   if (raw.startsWith('SERVICE_ACTION_FAILED:')) return raw.slice('SERVICE_ACTION_FAILED:'.length).trim()
   const code = errorCode(err)
+  if (/^SERVICE_EXIT_\d+$/.test(code)) return t('error.SERVICE_EXIT', { code: code.slice('SERVICE_EXIT_'.length) })
   const translated = code ? t(`error.${code}`) : ''
   if (translated && translated !== `error.${code}`) return translated
   if (raw.includes('Failed to fetch') || raw.includes('fetch failed')) return t('error.CONNECTION')

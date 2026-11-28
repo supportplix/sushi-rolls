@@ -14,3 +14,6 @@ zkteco-bridge/obj/
 .DS_Store
 supabase/.temp/
 supabase/.branches/
+# Local agent tooling and the working-copy audit report are not release artifacts.
+.ruv-swarm/
+AUDIT_REPORT.md

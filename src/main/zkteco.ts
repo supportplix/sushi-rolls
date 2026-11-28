@@ -1,6 +1,7 @@
 import { app } from 'electron'
 import { spawn, execFileSync } from 'child_process'
 import { createConnection, Socket } from 'net'
+import { createHash, createHmac, randomBytes } from 'crypto'
 import { join } from 'path'
 import { existsSync, readFileSync, appendFileSync } from 'fs'
 import { z } from 'zod'
@@ -97,19 +98,42 @@ function readSupabaseConfig(): { url: string; key: string } | null {
   }
 }
 
+/**
+ * The renderer can boot its Supabase client from build-time env vars instead of
+ * config.json; without this fallback every zkteco authorization check would
+ * fail FORBIDDEN even with a valid session in that mode.
+ */
+function readSupabaseEnvConfig(): { url: string; key: string } | null {
+  // VITE_* must use literal dot access so electron-vite can inline them at build
+  // time; MAIN_VITE_* stays runtime-readable (bracket access) as added by the user.
+  const url = process.env['MAIN_VITE_SUPABASE_URL'] || process.env.VITE_SUPABASE_URL
+  const key = process.env['MAIN_VITE_SUPABASE_ANON_KEY'] || process.env.VITE_SUPABASE_ANON_KEY
+  if (!url || !key) return null
+  return { url: url.replace(/\/$/, ''), key }
+}
+
 async function hasDeviceManagePermission(accessToken: string): Promise<boolean> {
-  const config = readSupabaseConfig()
+  const config = readSupabaseConfig() ?? readSupabaseEnvConfig()
   if (!config || !accessToken) return false
-  const response = await fetch(`${config.url}/rest/v1/rpc/has_perm`, {
-    method: 'POST',
-    headers: {
-      apikey: config.key,
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ p: 'device.manage' })
-  })
-  return response.ok && await response.json() === true
+  try {
+    const response = await fetch(`${config.url}/rest/v1/rpc/has_perm`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(8000),
+      headers: {
+        apikey: config.key,
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ p: 'device.manage' })
+    })
+    if (!response.ok) return false
+    const body: unknown = await response.json()
+    return body === true
+  } catch {
+    // An unreachable backend must fail closed (FORBIDDEN), not hang the IPC
+    // call forever or reject with an unhandled network error.
+    return false
+  }
 }
 
 export function parseZkTecoStatus(raw: unknown): ZkTecoStatus | null {
@@ -354,6 +378,30 @@ export class ZkTecoBridgeManager {
     })
   }
 
+  /**
+   * Proof-of-possession for privileged pipe commands. The bridge only issues a
+   * challenge after verifying this process's executable path, and binds the
+   * challenge to our PID/connection for 20 seconds with single use. The HMAC
+   * key is derived from two nonces in memory only — nothing secret is logged or
+   * persisted, and a plain local pipe client cannot produce a valid proof.
+   */
+  private async privilegedProof(): Promise<{ challenge: string; proof: string }> {
+    const clientNonce = randomBytes(32).toString('base64')
+    const response = await this.request('auth_challenge', {
+      processPath: process.execPath,
+      clientNonce
+    }) as { ok?: boolean; challenge?: string; serverNonce?: string; error?: string }
+    if (response.ok === false || !response.challenge || !response.serverNonce) {
+      throw new Error(response.error ?? 'ZKTeco bridge authentication failed')
+    }
+    const key = createHash('sha256')
+      .update(Buffer.concat([Buffer.from(clientNonce, 'base64'), Buffer.from(response.serverNonce, 'base64')]))
+      .digest()
+    const proof = createHmac('sha256', key).update(Buffer.from(response.challenge, 'base64')).digest('base64')
+    key.fill(0)
+    return { challenge: response.challenge, proof }
+  }
+
   async health(): Promise<ZkTecoStatus> {
     try {
       const response = await this.request('get_health') as { status?: unknown }
@@ -373,7 +421,8 @@ export class ZkTecoBridgeManager {
 
   async configure(supabaseUrl: string, deviceToken: string, timezone: string): Promise<ZkTecoServiceResult> {
     try {
-      await this.request('configure', { supabaseUrl, deviceToken, timezone })
+      const proof = await this.privilegedProof()
+      await this.request('configure', { supabaseUrl, deviceToken, timezone, challenge: proof.challenge, proof: proof.proof })
       return { ok: true }
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : 'ZKTeco configuration failed' }
@@ -383,10 +432,13 @@ export class ZkTecoBridgeManager {
   async enroll(args: ZkTecoEnrollArgs): Promise<ZkTecoEnrollResult> {
     if (!await hasDeviceManagePermission(args.accessToken)) return { ok: false, error: 'FORBIDDEN' }
     try {
+      const proof = await this.privilegedProof()
       const response = await this.request(args.watchOnly ? 'watch_enrollment' : 'enroll', {
         deviceUserId: args.deviceUserId,
         name: args.name,
-        timeoutSeconds: args.timeoutSeconds ?? 60
+        timeoutSeconds: args.timeoutSeconds ?? 60,
+        challenge: proof.challenge,
+        proof: proof.proof
       }) as { ok?: boolean; commandId?: string; error?: string }
       if (response.ok === false) return { ok: false, error: response.error ?? 'ENROLL_FAILED' }
       return { ok: true, commandId: response.commandId ?? '' }
@@ -402,7 +454,8 @@ export class ZkTecoBridgeManager {
    */
   async checkEnrollment(commandId: string): Promise<ZkTecoEnrollCheckResult> {
     try {
-      const response = await this.request('check_enrollment', { commandId }) as { ok?: boolean; status?: string; count?: number; baseline?: number; error?: string }
+      const proof = await this.privilegedProof()
+      const response = await this.request('check_enrollment', { commandId, challenge: proof.challenge, proof: proof.proof }) as { ok?: boolean; status?: string; count?: number; baseline?: number; error?: string }
       if (response.ok === false) return { ok: false, error: response.error ?? 'CHECK_FAILED' }
       return { ok: true, status: response.status, count: response.count, baseline: response.baseline }
     } catch (error) {

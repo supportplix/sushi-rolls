@@ -16,6 +16,8 @@ namespace SushiRolls.ZkTeco
         private readonly string deviceSerial;
         private readonly TimeSpan interval;
         private readonly Action<OutboxEntry> output;
+        private readonly Queue<AttendanceEvent> persistBacklog = new Queue<AttendanceEvent>();
+        private readonly object backlogSync = new object();
         private CancellationTokenSource stopSource;
         private Task worker;
         private readonly object sync = new object();
@@ -65,19 +67,68 @@ namespace SushiRolls.ZkTeco
         public int PollOnce()
         {
             ThrowIfDisposed();
-            var attendance = device.ReadNewAttendance();
-            var added = new List<OutboxEntry>();
-            foreach (var item in attendance)
+            // ReadNewAttendance drains the device-side log; from that moment the
+            // events exist only here. Persist the whole batch in ONE atomic outbox
+            // write and, on ANY failure after the drain (device read, outbox IO,
+            // mutex timeout), hold the events in a backlog so the next poll
+            // retries them before draining more from the terminal — otherwise a
+            // transient failure silently drops punches.
+            List<AttendanceEvent> batch;
+            lock (backlogSync)
             {
-                added.Add(outbox.Append(item, deviceSerial));
+                batch = new List<AttendanceEvent>(persistBacklog);
+                persistBacklog.Clear();
             }
-            outbox.Flush();
-            foreach (var entry in added)
+            var persisted = false;
+            try
             {
-                if (!entry.Synced) output(entry);
+                var attendance = device.ReadNewAttendance();
+                if (attendance != null)
+                {
+                    foreach (var item in attendance) batch.Add(item);
+                }
+
+                var added = new List<OutboxEntry>();
+                if (batch.Count > 0)
+                {
+                    Exception lastError = null;
+                    for (var attempt = 1; attempt <= 3; attempt++)
+                    {
+                        try
+                        {
+                            added.AddRange(outbox.AppendRange(batch, deviceSerial));
+                            lastError = null;
+                            break;
+                        }
+                        catch (Exception ex)
+                        {
+                            // One atomic write per batch, retried briefly: transient
+                            // IO/mutex failures must not drop a drained punch batch.
+                            if (attempt >= 3) lastError = ex;
+                            else Thread.Sleep(250 * attempt);
+                        }
+                    }
+                    if (lastError != null) throw lastError;
+                }
+                persisted = true;
+                outbox.Flush();
+                foreach (var entry in added)
+                {
+                    if (!entry.Synced) output(entry);
+                }
+                Cycles++;
+                return added.Count;
             }
-            Cycles++;
-            return added.Count;
+            finally
+            {
+                if (!persisted)
+                {
+                    lock (backlogSync)
+                    {
+                        foreach (var item in batch) persistBacklog.Enqueue(item);
+                    }
+                }
+            }
         }
 
         public void Dispose()

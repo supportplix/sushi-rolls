@@ -151,22 +151,26 @@ describe('checkLiveEnrollment', () => {
     checkEnrollment.mockReset()
   })
 
-  it('asks the bridge to probe the running watch enrollment', async () => {
+  const authDb = {
+    auth: { getSession: async () => ({ data: { session: { access_token: 'admin-token' } } }) }
+  } as unknown as SupabaseClient
+
+  it('asks the authorized bridge to probe the running watch enrollment', async () => {
     checkEnrollment.mockResolvedValue({ ok: true, status: 'awaiting_scan', count: 3, baseline: 3 })
 
-    await expect(checkLiveEnrollment('watch-1')).resolves.toEqual({ ok: true, status: 'awaiting_scan', count: 3, baseline: 3 })
-    expect(checkEnrollment).toHaveBeenCalledWith('watch-1')
+    await expect(checkLiveEnrollment(authDb, 'watch-1')).resolves.toEqual({ ok: true, status: 'awaiting_scan', count: 3, baseline: 3 })
+    expect(checkEnrollment).toHaveBeenCalledWith({ commandId: 'watch-1', accessToken: 'admin-token' })
   })
 
   it('reports a completed registration', async () => {
     checkEnrollment.mockResolvedValue({ ok: true, status: 'enrolled', count: 4, baseline: 3 })
 
-    await expect(checkLiveEnrollment('watch-1')).resolves.toMatchObject({ ok: true, status: 'enrolled' })
+    await expect(checkLiveEnrollment(authDb, 'watch-1')).resolves.toMatchObject({ ok: true, status: 'enrolled' })
   })
 
   it('propagates bridge errors', async () => {
     checkEnrollment.mockResolvedValue({ ok: false, error: 'NO_ACTIVE_ENROLLMENT' })
 
-    await expect(checkLiveEnrollment('watch-1')).resolves.toMatchObject({ ok: false, error: 'NO_ACTIVE_ENROLLMENT' })
+    await expect(checkLiveEnrollment(authDb, 'watch-1')).resolves.toMatchObject({ ok: false, error: 'NO_ACTIVE_ENROLLMENT' })
   })
 })

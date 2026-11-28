@@ -20,9 +20,34 @@ export function num(value: number | string | null | undefined, maxFrac = 2): str
   return n.toLocaleString('en-US', { maximumFractionDigits: maxFrac })
 }
 
+const ARABIC_INDIC_DIGITS = '٠١٢٣٤٥٦٧٨٩'
+const EXTENDED_ARABIC_DIGITS = '۰۱۲۳۴۵۶۷۸۹'
+
+/** Money inputs may contain Arabic-Indic digits and Arabic decimal separators. */
+function normalizeNumeric(value: string): string {
+  let out = ''
+  for (const char of String(value)) {
+    const arabic = ARABIC_INDIC_DIGITS.indexOf(char)
+    if (arabic !== -1) {
+      out += String(arabic)
+      continue
+    }
+    const extended = EXTENDED_ARABIC_DIGITS.indexOf(char)
+    if (extended !== -1) {
+      out += String(extended)
+      continue
+    }
+    out += char
+  }
+  return out
+    .replace(/٫/g, '.') // Arabic decimal separator
+    .replace(/[٬،,]/g, ',') // Arabic/Persian/Latin thousands separators
+    .replace(/−/g, '-') // Unicode minus
+}
+
 export function parseNum(value: string): number {
   if (!value) return 0
-  const normalized = String(value).replace(/,/g, '')
+  const normalized = normalizeNumeric(value).replace(/,/g, '')
   const match = normalized.match(/-?\d*\.?\d+/)
   if (!match) return 0
   const n = Number(match[0])

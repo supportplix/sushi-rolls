@@ -46,8 +46,12 @@ export default function SettingsPage(): JSX.Element {
   const db = useDb()
   const { settings, refreshSettings, profile, can } = useAuth()
   const toast = useToast()
+  const canManageSettings = can('settings.manage')
   const canManageDevice = can('device.manage') || profile?.role === 'super_admin'
-  const [tab, setTab] = useState<Tab>('restaurant')
+  const canBackup = can('backup.manage')
+  // A backup-only operator must land on the backup tab, not on settings they
+  // have no permission to read or change.
+  const [tab, setTab] = useState<Tab>(canManageSettings ? 'restaurant' : 'backup')
   const [saving, setSaving] = useState(false)
   const [version, setVersion] = useState('')
   const [confirmRestore, setConfirmRestore] = useState(false)
@@ -127,14 +131,18 @@ export default function SettingsPage(): JSX.Element {
   }
 
   const tabs: { value: Tab; label: string; icon: JSX.Element }[] = [
-    { value: 'restaurant', label: t('settings.restaurant'), icon: <Building2 className="h-3.5 w-3.5" /> },
-    { value: 'tax', label: t('settings.tax'), icon: <ReceiptText className="h-3.5 w-3.5" /> },
-    { value: 'receipt', label: t('settings.receipt'), icon: <ReceiptText className="h-3.5 w-3.5" /> },
-    { value: 'printing', label: t('settings.printing'), icon: <Printer className="h-3.5 w-3.5" /> },
+    ...(canManageSettings
+      ? [
+          { value: 'restaurant' as Tab, label: t('settings.restaurant'), icon: <Building2 className="h-3.5 w-3.5" /> },
+          { value: 'tax' as Tab, label: t('settings.tax'), icon: <ReceiptText className="h-3.5 w-3.5" /> },
+          { value: 'receipt' as Tab, label: t('settings.receipt'), icon: <ReceiptText className="h-3.5 w-3.5" /> },
+          { value: 'printing' as Tab, label: t('settings.printing'), icon: <Printer className="h-3.5 w-3.5" /> }
+        ]
+      : []),
     ...(canManageDevice ? [{ value: 'zkteco' as Tab, label: 'جهاز البصمة', icon: <Fingerprint className="h-3.5 w-3.5" /> }] : []),
-    { value: 'session', label: t('settings.session'), icon: <Timer className="h-3.5 w-3.5" /> },
-    { value: 'backup', label: t('settings.backup'), icon: <ServerCog className="h-3.5 w-3.5" /> },
-    { value: 'about', label: t('settings.about'), icon: <Info className="h-3.5 w-3.5" /> }
+    ...(canManageSettings ? [{ value: 'session' as Tab, label: t('settings.session'), icon: <Timer className="h-3.5 w-3.5" /> }] : []),
+    ...(canBackup ? [{ value: 'backup' as Tab, label: t('settings.backup'), icon: <ServerCog className="h-3.5 w-3.5" /> }] : []),
+    ...(canManageSettings ? [{ value: 'about' as Tab, label: t('settings.about'), icon: <Info className="h-3.5 w-3.5" /> }] : [])
   ]
 
   const printerOptions = useMemo(
@@ -275,7 +283,7 @@ export default function SettingsPage(): JSX.Element {
       )}
 
 
-      {tab === 'backup' && (
+      {tab === 'backup' && canBackup && (
         <SectionCard title={t('settings.backup')}>
           <div className="max-w-2xl space-y-3">
             <p className="rounded-xl bg-white/[0.03] p-3 text-[11px] leading-relaxed text-txt-faint">{t('settings.backupHint')}</p>
@@ -339,7 +347,7 @@ export default function SettingsPage(): JSX.Element {
       )}
 
       <ConfirmDialog
-        open={confirmRestore}
+        open={confirmRestore && canBackup}
         onClose={() => setConfirmRestore(false)}
         title={t('settings.backupImport')}
         message={t('settings.backupConfirm')}
@@ -350,7 +358,11 @@ export default function SettingsPage(): JSX.Element {
           try {
             const res = await importBackup(db)
             if (res.ok) {
-              toast.success(t('settings.restoreDone'))
+              toast.success(
+                res.summary?.rows_upserted != null
+                  ? t('settings.restoreDoneSummary', { rows: res.summary.rows_upserted })
+                  : t('settings.restoreDone')
+              )
               await refreshSettings()
             } else if (!res.canceled) {
               toast.error(res.error ?? t('settings.restoreBad'))

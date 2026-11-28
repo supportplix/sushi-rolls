@@ -255,7 +255,8 @@ export default function ExpensesPage(): JSX.Element {
                     type="button"
                     className="text-[10px] font-semibold text-txt-faint hover:text-txt"
                     onClick={async () => {
-                      await db.from('expense_categories').update({ is_active: !c.is_active }).eq('id', c.id)
+                      const { error } = await db.from('expense_categories').update({ is_active: !c.is_active }).eq('id', c.id)
+                      if (error) toast.error(humanError(error))
                       void cats.reload()
                     }}
                   >

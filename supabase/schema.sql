@@ -1,8 +1,31 @@
 -- ============================================================================
 -- SUSHI ROLLS — Restaurant Management & POS
--- Supabase schema (Postgres 15+). Run this whole file once in the
--- Supabase Dashboard → SQL Editor, then optionally run supabase/seed.sql.
+-- Supabase schema (Postgres 15+). BASELINE ONLY — run this once on a NEW
+-- database, then apply every file in supabase/migrations/ in filename order.
+-- The authoritative runner is supabase/apply-migrations.sql (psql) — it makes
+-- the required order explicit. From the Supabase SQL Editor, run schema.sql
+-- first, then paste the migration files one by one in ascending filename order.
+--
+-- DO NOT RE-RUN THIS FILE ON AN INITIALISED DATABASE. Several functions below
+-- are the pre-hardening baseline (permission helpers, pay_order, refund_order,
+-- transfers, guard_profile_update, manual attendance, ...). Re-running it
+-- SILENTLY REVERTS the fixes in the migrations, including the financial guards
+-- in 20261127210000_audit_hardening.sql. The tripwire below refuses a re-run
+-- once any migration has been applied; rebuild from scratch instead.
+--
+-- This is a baseline, not an upgrade path: schema changes belong in a new
+-- migration under supabase/migrations/, not in this file.
 -- ============================================================================
+
+do $$
+begin
+  if to_regclass('public.attendance_devices') is not null
+     or to_regprocedure('public.employee_is_self(uuid)') is not null
+     or to_regprocedure('public.admin_restore_backup(jsonb)') is not null then
+    raise exception 'SCHEMA_ALREADY_MIGRATED: do not re-run schema.sql; apply the migrations in supabase/migrations/ in filename order (see supabase/apply-migrations.sql)'
+      using errcode = '55000';
+  end if;
+end $$;
 
 create extension if not exists pgcrypto;
 

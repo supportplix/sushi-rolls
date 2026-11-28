@@ -49,8 +49,10 @@ interface ProductForm {
   image_url: string
   is_available: boolean
   is_popular: boolean
-  variants: { name_ar: string; price_delta: string }[]
-  recipe: { ingredient_id: string; quantity: string }[]
+  // `id` is kept for rows loaded from the database so saving can diff instead
+  // of deleting and reinserting every variant/recipe item.
+  variants: { id?: string; name_ar: string; price_delta: string }[]
+  recipe: { id?: string; ingredient_id: string; quantity: string }[]
 }
 
 const emptyProduct: ProductForm = {
@@ -107,6 +109,8 @@ export default function MenuPage(): JSX.Element {
 
   const [productOpen, setProductOpen] = useState(false)
   const [form, setForm] = useState<ProductForm>(emptyProduct)
+  // A failed recipe fetch must never be interpreted as "no recipe" on save.
+  const [recipeLoadFailed, setRecipeLoadFailed] = useState(false)
   const [saving, setSaving] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [categoryOpen, setCategoryOpen] = useState(false)
@@ -129,11 +133,13 @@ export default function MenuPage(): JSX.Element {
   } | null>(null)
 
   const openNew = (): void => {
+    setRecipeLoadFailed(false)
     setForm({ ...emptyProduct, category_id: cats.data?.[0]?.id ?? '' })
     setProductOpen(true)
   }
 
   const openEdit = async (product: Product & { product_variants?: ProductVariant[] }): Promise<void> => {
+    setRecipeLoadFailed(false)
     setProductOpen(true)
     setForm({
       id: product.id,
@@ -146,14 +152,23 @@ export default function MenuPage(): JSX.Element {
       image_url: product.image_url ?? '',
       is_available: product.is_available,
       is_popular: product.is_popular,
-      variants: (product.product_variants ?? []).map((v) => ({ name_ar: v.name_ar, price_delta: String(v.price_delta) })),
+      variants: (product.product_variants ?? []).map((v) => ({ id: v.id, name_ar: v.name_ar, price_delta: String(v.price_delta) })),
       recipe: []
     })
-    const { data: recipe } = await db.from('recipes').select('id, recipe_items(*)').eq('product_id', product.id).maybeSingle()
-    const items = (recipe?.recipe_items ?? []) as { ingredient_id: string; quantity: number }[]
+    const { data: recipe, error } = await db
+      .from('recipes')
+      .select('id, recipe_items(id, ingredient_id, quantity)')
+      .eq('product_id', product.id)
+      .maybeSingle()
+    if (error) {
+      setRecipeLoadFailed(true)
+      toast.error(humanError(error))
+      return
+    }
+    const items = (recipe?.recipe_items ?? []) as { id: string; ingredient_id: string; quantity: number }[]
     setForm((f) => ({
       ...f,
-      recipe: items.map((r) => ({ ingredient_id: r.ingredient_id, quantity: String(r.quantity) }))
+      recipe: items.map((r) => ({ id: r.id, ingredient_id: r.ingredient_id, quantity: String(r.quantity) }))
     }))
   }
 
@@ -180,6 +195,10 @@ export default function MenuPage(): JSX.Element {
       toast.error(t('common.required'))
       return
     }
+    if (recipeLoadFailed && canRecipe) {
+      toast.error(t('menu.recipeLoadFailed'))
+      return
+    }
     setSaving(true)
     try {
       const payload = {
@@ -204,40 +223,92 @@ export default function MenuPage(): JSX.Element {
         productId = data.id
       }
 
+      // Variants: delete only rows the user removed, update rows that already
+      // existed (keeping their IDs), and insert genuinely new rows. All fetches
+      // are error-checked so a network failure cannot masquerade as an empty
+      // list and wipe the menu.
       const variants = form.variants.filter((v) => v.name_ar.trim())
-      if (variants.length > 0 && productId) {
-        const { error } = await db.from('product_variants').insert(
-          variants.map((v) => ({
-            product_id: productId,
-            name_ar: v.name_ar.trim(),
-            price_delta: parseNum(v.price_delta),
-            is_default: false
-          }))
-        )
+      const { data: existingVariants, error: variantsFetchError } = await db
+        .from('product_variants')
+        .select('id')
+        .eq('product_id', productId)
+      if (variantsFetchError) throw variantsFetchError
+
+      const wantedVariantIds = new Set(variants.map((v) => v.id).filter((id): id is string => !!id))
+      const staleVariantIds = (existingVariants ?? [])
+        .map((v) => v.id as string)
+        .filter((id) => !wantedVariantIds.has(id))
+      const variantRow = (v: ProductForm['variants'][number]) => ({
+        product_id: productId,
+        name_ar: v.name_ar.trim(),
+        price_delta: parseNum(v.price_delta),
+        is_default: false
+      })
+      const changedVariants = variants.filter((v) => v.id).map((v) => ({ id: v.id as string, ...variantRow(v) }))
+      if (changedVariants.length > 0) {
+        const { error } = await db.from('product_variants').upsert(changedVariants, { onConflict: 'id' })
+        if (error) throw error
+      }
+      const addedVariants = variants.filter((v) => !v.id).map(variantRow)
+      if (addedVariants.length > 0) {
+        const { error } = await db.from('product_variants').insert(addedVariants)
+        if (error) throw error
+      }
+      // Deletions come last: a failed write leaves extra rows, never fewer.
+      if (staleVariantIds.length > 0) {
+        const { error } = await db.from('product_variants').delete().in('id', staleVariantIds)
         if (error) throw error
       }
 
       if (canRecipe && productId) {
-        const recipeRows = form.recipe.filter((r) => r.ingredient_id && parseNum(r.quantity) > 0)
-        const { data: existing } = await db.from('recipes').select('id').eq('product_id', productId).maybeSingle()
-        let recipeId = existing?.id
-        if (recipeRows.length > 0) {
+        // recipe_items has no unique constraint on ingredient_id; without a
+        // dedup here a repeated row would deduct the ingredient twice on sale.
+        const recipeRows = form.recipe
+          .filter((r) => r.ingredient_id && parseNum(r.quantity) > 0)
+          .filter((r, index, all) => all.findIndex((other) => other.ingredient_id === r.ingredient_id) === index)
+        // Re-read the recipe at save time rather than trusting the form loaded
+        // when the dialog opened. An error aborts the save before any delete.
+        const { data: existingRecipe, error: recipeFetchError } = await db
+          .from('recipes')
+          .select('id, recipe_items(id)')
+          .eq('product_id', productId)
+          .maybeSingle()
+        if (recipeFetchError) throw recipeFetchError
+
+        let recipeId = existingRecipe?.id as string | undefined
+        if (recipeRows.length === 0) {
+          if (recipeId) {
+            const { error } = await db.from('recipes').delete().eq('id', recipeId)
+            if (error) throw error
+          }
+        } else {
           if (!recipeId) {
             const { data, error } = await db.from('recipes').insert({ product_id: productId }).select('id').single()
             if (error) throw error
             recipeId = data.id
           }
-          await db.from('recipe_items').delete().eq('recipe_id', recipeId)
-          const { error } = await db.from('recipe_items').insert(
-            recipeRows.map((r) => ({
-              recipe_id: recipeId,
-              ingredient_id: r.ingredient_id,
-              quantity: parseNum(r.quantity)
-            }))
-          )
-          if (error) throw error
-        } else if (recipeId) {
-          await db.from('recipes').delete().eq('id', recipeId)
+          const existingItems = (existingRecipe?.recipe_items ?? []) as { id: string }[]
+          const wantedItemIds = new Set(recipeRows.map((r) => r.id).filter((id): id is string => !!id))
+          const staleItemIds = existingItems.map((i) => i.id).filter((id) => !wantedItemIds.has(id))
+          const itemRow = (r: ProductForm['recipe'][number]) => ({
+            recipe_id: recipeId as string,
+            ingredient_id: r.ingredient_id,
+            quantity: parseNum(r.quantity)
+          })
+          const changedItems = recipeRows.filter((r) => r.id).map((r) => ({ id: r.id as string, ...itemRow(r) }))
+          if (changedItems.length > 0) {
+            const { error } = await db.from('recipe_items').upsert(changedItems, { onConflict: 'id' })
+            if (error) throw error
+          }
+          const addedItems = recipeRows.filter((r) => !r.id).map(itemRow)
+          if (addedItems.length > 0) {
+            const { error } = await db.from('recipe_items').insert(addedItems)
+            if (error) throw error
+          }
+          if (staleItemIds.length > 0) {
+            const { error } = await db.from('recipe_items').delete().in('id', staleItemIds)
+            if (error) throw error
+          }
         }
       }
 
@@ -793,7 +864,11 @@ export default function MenuPage(): JSX.Element {
         confirmLabel={t('menu.archive')}
         onConfirm={async () => {
           if (!archiveTarget) return
-          await db.from('products').update({ is_archived: true }).eq('id', archiveTarget.id)
+          const { error } = await db.from('products').update({ is_archived: true }).eq('id', archiveTarget.id)
+          if (error) {
+            toast.error(humanError(error))
+            return
+          }
           setArchiveTarget(null)
           toast.success(t('common.saved'))
           void prods.reload()
@@ -818,7 +893,11 @@ export default function MenuPage(): JSX.Element {
         danger={false}
         onConfirm={async () => {
           if (!catToggle) return
-          await db.from('categories').update({ is_active: !catToggle.is_active }).eq('id', catToggle.id)
+          const { error } = await db.from('categories').update({ is_active: !catToggle.is_active }).eq('id', catToggle.id)
+          if (error) {
+            toast.error(humanError(error))
+            return
+          }
           setCatToggle(null)
           void cats.reload()
         }}

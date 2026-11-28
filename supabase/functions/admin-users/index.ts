@@ -3,6 +3,9 @@
 //
 // Actions: create | update | reset_password | delete
 // Only callers with users.manage (owner / super_admin / explicit override) pass.
+// users.manage is NOT a licence to mint a privileged account: a role may only
+// be assigned when its rank is <= the caller's own role rank. owner and
+// super_admin are the only roles allowed to create/assign owner or super_admin.
 
 import { createClient } from 'npm:@supabase/supabase-js@2'
 
@@ -17,6 +20,26 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { ...cors, 'Content-Type': 'application/json' } })
 
 const EMAIL_DOMAIN = 'sushirolls.local'
+
+// Mirrors public._role_rank() in migration 20261128000000. owner and
+// super_admin intentionally share the top rank so either can appoint the other.
+const ROLE_RANK: Record<string, number> = {
+  super_admin: 100,
+  owner: 100,
+  general_manager: 70,
+  branch_manager: 60,
+  inventory_manager: 40,
+  accountant: 40,
+  cashier: 30,
+  waiter: 20,
+  kitchen: 20
+}
+
+const canAssignRole = (callerRole: string, targetRole: string): boolean => {
+  const callerRank = ROLE_RANK[callerRole] ?? -1
+  const targetRank = ROLE_RANK[targetRole] ?? -1
+  return targetRank >= 0 && callerRank >= targetRank
+}
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors })
@@ -61,6 +84,7 @@ Deno.serve(async (req) => {
       const role = String(body.role ?? 'cashier')
       if (!/^[a-z0-9._-]{3,32}$/.test(username)) return json({ error: 'INVALID_USERNAME' }, 400)
       if (password.length < 6) return json({ error: 'WEAK_PASSWORD' }, 400)
+      if (!canAssignRole(profile.role, role)) return json({ error: 'ROLE_NOT_ASSIGNABLE' }, 403)
 
       const { data: created, error } = await admin.auth.admin.createUser({
         email: `${username}@${EMAIL_DOMAIN}`,
@@ -86,10 +110,27 @@ Deno.serve(async (req) => {
     const targetId = String(body.id ?? '')
     if (!targetId) return json({ error: 'MISSING_ID' }, 400)
 
+    // A users.manage override must not be a licence to take over a more
+    // privileged account (password reset, deactivation or profile edits).
+    const { data: target } = await admin
+      .from('profiles')
+      .select('role')
+      .eq('id', targetId)
+      .maybeSingle()
+    if (!target) return json({ error: 'USER_NOT_FOUND' }, 404)
+    if (!canAssignRole(profile.role, target.role)) return json({ error: 'TARGET_NOT_MANAGEABLE' }, 403)
+    if (targetId === userData.user.id && body.is_active === false) {
+      return json({ error: 'CANNOT_DEACTIVATE_SELF' }, 400)
+    }
+
     if (action === 'update') {
       const patch: Record<string, unknown> = {}
       if (body.full_name !== undefined) patch.full_name = String(body.full_name)
-      if (body.role !== undefined) patch.role = String(body.role)
+      if (body.role !== undefined) {
+        const role = String(body.role)
+        if (!canAssignRole(profile.role, role)) return json({ error: 'ROLE_NOT_ASSIGNABLE' }, 403)
+        patch.role = role
+      }
       if (body.is_active !== undefined) patch.is_active = Boolean(body.is_active)
       if (Object.keys(patch).length > 0) {
         const { error } = await admin.from('profiles').update(patch).eq('id', targetId)

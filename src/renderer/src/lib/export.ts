@@ -5,10 +5,18 @@ function download(dataBase64: string, fileName: string, filters: { name: string;
   return api.file.save({ dataBase64, fileName, filters }).then((r) => r.ok)
 }
 
+// Excel/Sheets evaluate cells beginning with these characters as formulas.
+// Leading whitespace is included because spreadsheet apps trim before parsing.
+const CSV_FORMULA_PREFIX = /^\s*[=+\-@]|^[\t\r]/
+
 export function toCsv(headers: string[], rows: (string | number)[][]): string {
   const escape = (v: string | number): string => {
+    if (typeof v !== 'string') return String(v ?? '')
     const s = String(v ?? '')
-    return /[",\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s
+    // A leading apostrophe keeps the visible text unchanged while forcing the
+    // cell to be imported as text. Numeric cells are safe and left untouched.
+    const safe = CSV_FORMULA_PREFIX.test(s) ? `'${s}` : s
+    return /[",\n\r]/.test(safe) ? `"${safe.replaceAll('"', '""')}"` : safe
   }
   return [headers, ...rows].map((r) => r.map(escape).join(',')).join('\r\n')
 }
@@ -27,10 +35,20 @@ export async function exportXlsx(name: string, sheet: string, headers: string[],
   return download(b64, `${name}.xlsx`, [{ name: 'Excel', extensions: ['xlsx'] }])
 }
 
+// Row and header values come from user-entered DB records; unescaped markup
+// would corrupt the printed report and is an injection sink in the PDF window.
+function esc(v: string | number): string {
+  return String(v ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+}
+
 export function buildSimpleReportHtml(title: string, subtitle: string, headers: string[], rows: (string | number)[][], logo: string): string {
-  const th = headers.map((h) => `<th>${h}</th>`).join('')
+  const th = headers.map((h) => `<th>${esc(h)}</th>`).join('')
   const tr = rows
-    .map((r) => `<tr>${r.map((c) => `<td>${String(c ?? '')}</td>`).join('')}</tr>`)
+    .map((r) => `<tr>${r.map((c) => `<td>${esc(c)}</td>`).join('')}</tr>`)
     .join('')
   return `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8">
   <style>
@@ -47,7 +65,7 @@ export function buildSimpleReportHtml(title: string, subtitle: string, headers: 
     tr:nth-child(even) td { background: #fafafa; }
     .foot { margin-top: 18px; color: #999; font-size: 10px; text-align: center; }
   </style></head><body>
-  <div class="head"><div><h1>${title}</h1><div class="sub">${subtitle}</div></div>${logo ? `<img src="${logo}">` : ''}</div>
+  <div class="head"><div><h1>${esc(title)}</h1><div class="sub">${esc(subtitle)}</div></div>${logo ? `<img src="${esc(logo)}">` : ''}</div>
   <table><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table>
   <div class="foot">SUSHI ROLLS — ${new Date().toLocaleString('ar-EG-u-nu-latn')}</div>
   </body></html>`

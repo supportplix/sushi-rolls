@@ -69,6 +69,18 @@ export default function EmployeesPage(): JSX.Element {
     liveEnrollmentRef.current = liveEnrollment
   }, [liveEnrollment])
 
+  // watchLiveEnrollment returns an ipcRenderer unsubscribe; discarding it leaks
+  // one permanent status listener per enrollment and replays every broadcast.
+  const stopLiveWatchRef = useRef<(() => void) | null>(null)
+  const startLiveWatch = (employeeId: string, commandId: string): void => {
+    stopLiveWatchRef.current?.()
+    stopLiveWatchRef.current = watchLiveEnrollment(db, employeeId, commandId, (status) => {
+      setLiveEnrollment((prev) => ({ employeeId, commandId, status }))
+      void employeeDevicesRef.current.reload()
+    })
+  }
+  useEffect(() => () => { stopLiveWatchRef.current?.() }, [])
+
   const isTerminalLiveStatus = (status: ZkTecoStatus | null): boolean => {
     const step = status?.enrollmentStatus
     return step === 'enrolled' || step === 'completed' || step === 'failed' || step === 'timed_out' || step === 'cancelled'
@@ -82,7 +94,7 @@ export default function EmployeesPage(): JSX.Element {
   const runLiveCheck = async (commandId: string, silent = false): Promise<boolean> => {
     setCheckingEnrollment(true)
     try {
-      const result = await checkLiveEnrollment(commandId)
+      const result = await checkLiveEnrollment(db, commandId)
       if (!result.ok) {
         if (!silent) toast.error(humanError(result.error))
         return false
@@ -108,7 +120,7 @@ export default function EmployeesPage(): JSX.Element {
     return () => {
       const live = liveEnrollmentRef.current
       if (live?.commandId && !isTerminalLiveStatus(live.status)) {
-        void checkLiveEnrollment(live.commandId).catch(() => undefined)
+        void checkLiveEnrollment(db, live.commandId).catch(() => undefined)
       }
     }
   }, [])
@@ -142,11 +154,11 @@ export default function EmployeesPage(): JSX.Element {
   useEffect(() => {
     if (!manage) return
     const timer = window.setInterval(() => {
-      void employeeDevices.reload()
-      void commands.reload()
+      void employeeDevicesRef.current.reload()
+      void commandsRef.current.reload()
     }, 3000)
     return () => window.clearInterval(timer)
-  }, [manage, employeeDevices, commands])
+  }, [manage])
 
   const today = toISODate(new Date())
   const attendance = useAsync(async () => {
@@ -169,13 +181,26 @@ export default function EmployeesPage(): JSX.Element {
     return (data ?? []) as Attendance[]
   }, [db])
 
+  // useAsync returns a fresh object identity every render, so depending on it
+  // in an interval effect would tear down and restart the timer on every
+  // keystroke. Refs keep the effects on stable deps while always calling the
+  // latest reload.
+  const employeeDevicesRef = useRef(employeeDevices)
+  const commandsRef = useRef(commands)
+  const attendanceRef = useRef(attendance)
+  const historyRef = useRef(history)
+  employeeDevicesRef.current = employeeDevices
+  commandsRef.current = commands
+  attendanceRef.current = attendance
+  historyRef.current = history
+
   useEffect(() => {
     const timer = window.setInterval(() => {
-      void attendance.reload()
-      void history.reload()
+      void attendanceRef.current.reload()
+      void historyRef.current.reload()
     }, 5000)
     return () => window.clearInterval(timer)
-  }, [attendance, history])
+  }, [])
 
   const notifyPunch = (name: string, label: string): void => {
     try {
@@ -326,10 +351,7 @@ export default function EmployeesPage(): JSX.Element {
         const employee = (list.data ?? []).find((item) => item.id === employeeId)
         const commandId = await enrollFingerprintLive(db, employeeId, employee?.full_name ?? 'Employee')
         setLiveEnrollment({ employeeId, commandId, status: null })
-        watchLiveEnrollment(db, employeeId, commandId, (status) => {
-          setLiveEnrollment((prev) => ({ employeeId, commandId, status }))
-          void employeeDevices.reload()
-        })
+        startLiveWatch(employeeId, commandId)
         toast.success('تمت إضافة الموظف على الجهاز — سجّل البصمة من الجهاز والمتابعة لايف')
       } else {
         await enqueueEmployeeCommand(db, employeeId, 'delete_user', `disable-${employeeId}-${Date.now()}`)
@@ -378,10 +400,7 @@ export default function EmployeesPage(): JSX.Element {
           else {
             const commandId = await enrollFingerprintLive(db, employeeId, form.full_name.trim())
             setLiveEnrollment({ employeeId, commandId, status: null })
-            watchLiveEnrollment(db, employeeId, commandId, (status) => {
-          setLiveEnrollment((prev) => ({ employeeId, commandId, status }))
-          void employeeDevices.reload()
-        })
+            startLiveWatch(employeeId, commandId)
           }
         } catch (zkError) {
           const message = humanError(zkError, true)

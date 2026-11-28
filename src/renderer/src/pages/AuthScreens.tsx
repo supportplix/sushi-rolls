@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react'
+import { createClient } from '@supabase/supabase-js'
 import { Eye, EyeOff, Loader2, LockKeyhole, PlugZap } from 'lucide-react'
 import logo from '@/assets/logo-ui.png'
 import { useAuth } from '@/lib/auth'
@@ -47,8 +48,58 @@ export function BootSplash(): JSX.Element {
 }
 
 export function Connect(): JSX.Element {
-  const { retryBoot } = useAuth()
+  const { retryBoot, saveConfig, config, connectionError } = useAuth()
+  const [url, setUrl] = useState(config?.supabaseUrl ?? '')
+  const [key, setKey] = useState(config?.supabaseAnonKey ?? '')
   const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(connectionError)
+
+  const submit = async (e: FormEvent): Promise<void> => {
+    e.preventDefault()
+    if (busy) return
+    setError(null)
+
+    let parsed: URL
+    try {
+      parsed = new URL(url.trim())
+    } catch {
+      setError(t('connect.bad'))
+      return
+    }
+    const local = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1'
+    if ((parsed.protocol !== 'https:' && !(local && parsed.protocol === 'http:')) || key.trim().length < 20) {
+      setError(t('connect.bad'))
+      return
+    }
+    const cleanUrl = parsed.toString().replace(/\/$/, '')
+    setBusy(true)
+    try {
+      // Probe with a throwaway client so a failed attempt cannot overwrite the
+      // shared client that the rest of the app reads from.
+      const probe = createClient(cleanUrl, key.trim(), {
+        auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }
+      })
+      const { error: rpcError } = await probe.rpc('instance_status')
+      if (rpcError) {
+        const missingSchema =
+          (rpcError as { code?: string }).code === 'PGRST202' ||
+          /could not find the function|does not exist/i.test(rpcError.message)
+        setError(missingSchema ? t('connect.schemaHint') : t('connect.bad'))
+        return
+      }
+      const res = await saveConfig({
+        ...(config ?? {}),
+        supabaseUrl: cleanUrl,
+        supabaseAnonKey: key.trim()
+      })
+      if (!res.ok) setError(res.error ?? t('connect.bad'))
+    } catch {
+      setError(t('connect.bad'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <Screen>
       <div className="w-full max-w-[420px]">
@@ -59,12 +110,45 @@ export function Connect(): JSX.Element {
           </div>
           <h1 className="text-lg font-black">{t('connect.title')}</h1>
           <p className="mt-1 text-[11px] leading-relaxed text-txt-faint">{t('connect.subtitle')}</p>
+          {error && (
+            <p className="mt-3 rounded-lg border border-brand-red/30 bg-brand-red/10 px-3 py-2 text-[11px] font-semibold leading-relaxed text-brand-redSoft">
+              {error}
+            </p>
+          )}
+          <form onSubmit={submit} className="mt-5 space-y-3.5 text-right" dir="rtl">
+            <Field label={t('connect.url')}>
+              <input
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                dir="ltr"
+                className="input text-left"
+                placeholder="https://xxxx.supabase.co"
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </Field>
+            <Field label={t('connect.key')}>
+              <textarea
+                value={key}
+                onChange={(e) => setKey(e.target.value)}
+                dir="ltr"
+                rows={3}
+                className="input text-left font-mono text-[11px]"
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </Field>
+            <Button type="submit" className="w-full" disabled={busy}>
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : t('connect.test')}
+            </Button>
+          </form>
           <Button
-            className="mt-5 w-full"
+            variant="ghost"
+            className="mt-2 w-full"
             disabled={busy}
-            icon={busy ? <Loader2 className="h-4 w-4 animate-spin" /> : undefined}
             onClick={async () => {
               setBusy(true)
+              setError(null)
               await retryBoot()
               setBusy(false)
             }}

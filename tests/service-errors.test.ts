@@ -19,4 +19,15 @@ describe('humanError', () => {
   it('keeps unrelated unknown errors generic by default', () => {
     expect(humanError(new Error('unexpected internal error'))).toBe('حصل خطأ، حاول تاني')
   })
+
+  it('translates hardening and other backend error codes', () => {
+    expect(humanError(new Error('ORDER_NOT_PAYABLE'))).toBe('الأوردر لا يقبل الدفع في حالته الحالية')
+    expect(humanError(new Error('PAYMENT_EXCEEDS_TOTAL'))).toBe('المبلغ أكبر من إجمالي الأوردر')
+    expect(humanError(new Error('PGRST202: function not found'))).toBe('وظيفة الاستعادة غير منشورة على قاعدة البيانات')
+    expect(humanError(new Error('ENROLLMENT_BUSY'))).toBe('جهاز البصمة مشغول بتسجيل آخر — حاول بعد قليل')
+  })
+
+  it('translates dynamic service exit codes', () => {
+    expect(humanError(new Error('SERVICE_EXIT_1060'))).toBe('فشل أمر خدمة البصمة (رمز الخروج 1060)')
+  })
 })

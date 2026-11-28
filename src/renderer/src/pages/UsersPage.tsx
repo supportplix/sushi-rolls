@@ -62,11 +62,12 @@ export default function UsersPage(): JSX.Element {
   }, [db])
 
   const logins = useAsync(async () => {
-    const { data } = await db
+    const { data, error } = await db
       .from('login_history')
       .select('*')
       .order('created_at', { ascending: false })
       .limit(400)
+    if (error) throw error
     return (data ?? []) as LoginHistory[]
   }, [db])
 
@@ -86,7 +87,10 @@ export default function UsersPage(): JSX.Element {
         const ctx = (error as { context?: { json?: () => Promise<{ error?: string }> } }).context
         if (ctx?.json) {
           const payload = await ctx.json()
-          if (payload?.error) message = payload.error
+          if (payload?.error) {
+            const translated = t(`error.${payload.error}`)
+            message = translated !== `error.${payload.error}` ? translated : humanError(payload.error)
+          }
         }
       } catch {
         void 0
@@ -158,9 +162,27 @@ export default function UsersPage(): JSX.Element {
       const rows = Object.entries(permState)
         .filter(([, v]) => v !== 'default')
         .map(([permission, v]) => ({ user_id: permUser.id, permission, allowed: v === 'allow' }))
-      await db.from('user_permissions').delete().eq('user_id', permUser.id)
+      const { data: existing, error: readError } = await db
+        .from('user_permissions')
+        .select('permission')
+        .eq('user_id', permUser.id)
+      if (readError) throw readError
+      const wanted = new Map(rows.map((row) => [row.permission, row]))
+      // 'default' means "no override", so only revocations are deleted.
+      // Upserting first means a failed write cannot erase existing overrides.
       if (rows.length > 0) {
-        const { error } = await db.from('user_permissions').insert(rows)
+        const { error } = await db.from('user_permissions').upsert(rows, { onConflict: 'user_id,permission' })
+        if (error) throw error
+      }
+      const revoked = (existing ?? [])
+        .map((row) => row.permission as string)
+        .filter((permission) => !wanted.has(permission))
+      if (revoked.length > 0) {
+        const { error } = await db
+          .from('user_permissions')
+          .delete()
+          .eq('user_id', permUser.id)
+          .in('permission', revoked)
         if (error) throw error
       }
       toast.success(t('common.saved'))

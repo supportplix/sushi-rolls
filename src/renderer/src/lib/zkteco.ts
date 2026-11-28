@@ -162,6 +162,11 @@ export async function enrollFingerprintLive(
   if (!deviceUserId) throw new Error('DEVICE_MAPPING_MISSING')
 
   await db.rpc('zkteco_update_enrollment', { p_employee_id: employeeId, p_status: 'awaiting_scan' })
+    .then(({ error }) => {
+      // Same silent-failure class as the terminal persist: a stale
+      // 'awaiting_scan' row misleads the UI about what the device holds.
+      if (error) console.error('[zkteco] persisting awaiting_scan failed:', error.message)
+    })
   const result = await api.zkteco.enroll({
     deviceUserId,
     name,
@@ -177,10 +182,17 @@ export async function enrollFingerprintLive(
  * Probes a running watch enrollment exactly once. The bridge stays silent
  * while the employee is at the terminal; call this after they step away so a
  * completed registration is picked up immediately instead of waiting for the
- * next periodic poll.
+ * next periodic poll. The call is authorized like enroll: the main process
+ * verifies the device.manage permission before talking to the bridge.
  */
-export async function checkLiveEnrollment(commandId: string): Promise<ZkTecoEnrollCheckResult> {
-  return api.zkteco.checkEnrollment(commandId)
+export async function checkLiveEnrollment(
+  db: SupabaseClient,
+  commandId: string
+): Promise<ZkTecoEnrollCheckResult> {
+  const { data: session } = await db.auth.getSession()
+  const accessToken = session.session?.access_token
+  if (!accessToken) throw new Error('NO_SESSION')
+  return api.zkteco.checkEnrollment({ commandId, accessToken })
 }
 
 /** Streams bridge enrollment steps and persists the terminal state in Supabase. */
@@ -202,6 +214,10 @@ export function watchLiveEnrollment(
     void db.rpc('zkteco_update_enrollment', {
       p_employee_id: employeeId,
       p_status: step === 'enrolled' || step === 'completed' ? 'enrolled' : 'failed'
+    }).then(({ error }) => {
+      // A silent failure here leaves employee_devices stuck on 'awaiting_scan'
+      // even though the terminal shows a successful registration.
+      if (error) console.error('[zkteco] persisting enrollment status failed:', error.message)
     })
   })
 }

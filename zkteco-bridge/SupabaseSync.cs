@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Text;
@@ -22,7 +23,12 @@ namespace SushiRolls.ZkTeco
 
         public async Task PushPendingAsync(Outbox outbox, BridgeConfig config, CancellationToken cancellationToken)
         {
-            var zone = TimeZoneInfo.FindSystemTimeZoneById(BridgeConfig.ResolveWindowsTimeZone(config.Timezone));
+            // ResolveWindowsTimeZone now falls back instead of throwing, but keep
+            // a last-resort guard: a missing/corrupt zone must never halt the
+            // whole attendance sync loop (events stay in the outbox for retry).
+            TimeZoneInfo zone;
+            try { zone = TimeZoneInfo.FindSystemTimeZoneById(BridgeConfig.ResolveWindowsTimeZone(config.Timezone)); }
+            catch (Exception) { zone = TimeZoneInfo.Utc; }
             while (true)
             {
                 var pending = outbox.ReadPending();
@@ -64,16 +70,19 @@ namespace SushiRolls.ZkTeco
                 }
                 catch (Exception pushError)
                 {
-                    // 409 means the events were already committed by a previous attempt.
-                    // Treat it as delivered so the local outbox can be drained.
-                    if (!pushError.Message.Contains("409")) throw;
-                    for (var index = 0; index < count; index++) outbox.MarkSynced(pending[index].EventId);
+                    // Only an explicit duplicate/conflict from push_events means
+                    // "already committed". Matching a bare "409" could swallow an
+                    // unrelated error and permanently drop punches from the outbox.
+                    var detail = pushError.Message ?? "";
+                    if (!detail.Contains("push_events failed with HTTP 409") &&
+                        !detail.Contains("EVENT_OR_COMMAND_CONFLICT")) throw;
+                    outbox.MarkSyncedRange(pending.Take(count).Select(e => e.EventId));
                     outbox.Compact();
                     return;
                 }
                 if (!response.ContainsKey("ok") || !Convert.ToBoolean(response["ok"], CultureInfo.InvariantCulture))
                     throw new InvalidOperationException("device-sync rejected attendance events");
-                for (var index = 0; index < count; index++) outbox.MarkSynced(pending[index].EventId);
+                outbox.MarkSyncedRange(pending.Take(count).Select(e => e.EventId));
                 outbox.Compact();
             }
         }

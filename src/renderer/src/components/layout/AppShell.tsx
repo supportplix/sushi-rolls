@@ -99,7 +99,7 @@ const GROUPS: NavGroup[] = [
     label: 'الإدارة',
     items: [
       { to: '/users', label: t('nav.users'), icon: <UsersRound className="h-[18px] w-[18px]" />, perms: ['users.manage'] },
-      { to: '/settings', label: t('nav.settings'), icon: <Settings className="h-[18px] w-[18px]" />, perms: ['settings.manage'] },
+      { to: '/settings', label: t('nav.settings'), icon: <Settings className="h-[18px] w-[18px]" />, perms: ['settings.manage', 'backup.manage'] },
     ]
   }
 ]

@@ -139,7 +139,10 @@ namespace SushiRolls.ZkTeco
 
         public Task<EnrollmentResult> ExecuteEnrollmentAsync(string deviceUserId, CancellationToken cancellationToken)
         {
-            return ExecuteEnrollmentAsync(deviceUserId, DefaultTimeout, cancellationToken);
+            // Use the worker's configured timeout: the pipe's timeoutSeconds is
+            // passed to the constructor, and hard-coding DefaultTimeout here made
+            // every direct enrollment ignore it and expire after 60 seconds.
+            return ExecuteEnrollmentAsync(deviceUserId, timeout, cancellationToken);
         }
 
         public async Task<EnrollmentResult> ExecuteEnrollmentAsync(string deviceUserId, TimeSpan timeout, CancellationToken cancellationToken)

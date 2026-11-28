@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, dialog, Menu, shell, Notification } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { join } from 'path'
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from 'fs'
 import { z } from 'zod'
 import type {
   AppConfig,
@@ -93,6 +93,14 @@ const zktecoEnrollSchema = z.object({
   deviceUserId: z.string().regex(/^\d{1,24}$/),
   name: z.string().min(1).max(100),
   timeoutSeconds: z.number().int().min(5).max(300).optional(),
+  // Without this flag the bridge runs a blocking enroll instead of the watch
+  // enrollment the live flow streams status for — zod silently stripped it.
+  watchOnly: z.boolean().optional(),
+  accessToken: z.string().min(1).max(4000)
+})
+
+const zktecoCheckSchema = z.object({
+  commandId: z.string().min(1).max(200),
   accessToken: z.string().min(1).max(4000)
 })
 
@@ -182,7 +190,7 @@ function createWindow(hashRoute = ''): BrowserWindow {
 }
 
 function openHidden(): BrowserWindow {
-  return new BrowserWindow({
+  const win = new BrowserWindow({
     show: false,
     width: 360,
     height: 800,
@@ -193,6 +201,14 @@ function openHidden(): BrowserWindow {
       offscreen: false
     }
   })
+  // These windows render HTML supplied by the renderer. Keep them on the
+  // single data: document we load: deny popups and any later navigation so a
+  // malicious markup payload cannot turn a print window into a live browser.
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  win.webContents.on('will-navigate', (event, url) => {
+    if (!url.startsWith('data:text/html;')) event.preventDefault()
+  })
+  return win
 }
 
 function wait(ms: number): Promise<void> {
@@ -246,8 +262,10 @@ ipcMain.handle('zkteco:enroll', async (_e, raw) => {
 })
 
 ipcMain.handle('zkteco:check-enrollment', async (_e, raw): Promise<ZkTecoEnrollCheckResult> => {
-  if (typeof raw !== 'string' || !raw) return { ok: false, error: 'INVALID_ARGS' }
-  return zktecoBridge.checkEnrollment(raw)
+  const parsed = zktecoCheckSchema.safeParse(raw)
+  if (!parsed.success) return { ok: false, error: 'INVALID_ARGS' }
+  if (!await zktecoBridge.authorize(parsed.data.accessToken)) return { ok: false, error: 'FORBIDDEN' }
+  return zktecoBridge.checkEnrollment(parsed.data.commandId)
 })
 
 ipcMain.handle('zkteco:service', async (_e, raw): Promise<ZkTecoServiceResult> => {
@@ -291,7 +309,6 @@ ipcMain.handle('print:receipt', async (_e, raw): Promise<PrintResult> => {
     `) as number
     const contentHeightPx = Number.isFinite(contentHeightPxRaw) ? contentHeightPxRaw : 0
     const pageSize = receiptPageSize(args.widthMm, contentHeightPx)
-    console.log('[print:receipt] measured contentHeightPx=%o pageSize=%o widthMm=%o', contentHeightPx, pageSize, args.widthMm)
     const silent = args.silent ?? !!args.deviceName
     if (!silent) {
       win.show()
@@ -373,10 +390,15 @@ ipcMain.handle('file:open', async (_e, raw): Promise<OpenResult> => {
       filters: args.filters
     })
     if (picked.canceled || picked.filePaths.length === 0) return { ok: false, canceled: true }
-    const data = readFileSync(picked.filePaths[0])
+    // Cap imports the same way file:save caps exports (60 MB base64 budget):
+    // a multi-GB file would otherwise be read into memory and base64-encoded
+    // straight through IPC.
+    const filePath = picked.filePaths[0]
+    if (statSync(filePath).size > 44_000_000) return { ok: false, error: 'FILE_TOO_LARGE' }
+    const data = readFileSync(filePath)
     return {
       ok: true,
-      name: picked.filePaths[0].split(/[\\/]/).pop(),
+      name: filePath.split(/[\\/]/).pop(),
       dataBase64: data.toString('base64')
     }
   } catch (err) {
@@ -430,8 +452,12 @@ function checkForUpdates(): void {
 function setupAutoUpdates(): void {
   setUpdateStatus({ state: app.isPackaged ? 'idle' : 'dev' })
   if (!app.isPackaged) return
+  // Download in the background so the existing "install" button has a ready
+  // artifact, but NEVER install silently on quit: installing is code execution
+  // and must remain an explicit user action. Releases are signed and published
+  // as drafts only (see electron-builder.yml + .github/workflows/release.yml).
   autoUpdater.autoDownload = true
-  autoUpdater.autoInstallOnAppQuit = true
+  autoUpdater.autoInstallOnAppQuit = false
   autoUpdater.on('checking-for-update', () => setUpdateStatus({ state: 'checking' }))
   autoUpdater.on('update-available', (info) => setUpdateStatus({ state: 'available', version: info.version }))
   autoUpdater.on('download-progress', (p) => setUpdateStatus({ state: 'downloading', percent: Math.round(p.percent) }))

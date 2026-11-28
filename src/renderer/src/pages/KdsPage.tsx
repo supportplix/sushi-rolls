@@ -49,11 +49,24 @@ export default function KdsPage(): JSX.Element {
 
   useRealtimeRefresh(['orders', 'order_items'], () => void orders.reload())
 
+  // Browsers cap AudioContext instances (~6 in Chromium); creating one per new
+  // order leaks them until beeps silently stop on a screen that runs all day.
+  const audioCtxRef = useRef<AudioContext | null>(null)
+  useEffect(() => {
+    return () => {
+      void audioCtxRef.current?.close().catch(() => undefined)
+      audioCtxRef.current = null
+    }
+  }, [])
+
   useEffect(() => {
     if (!orders.data) return
     if (orders.data.length > lastCount.current && lastCount.current > 0) {
       try {
-        const ctx = new AudioContext()
+        if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
+          audioCtxRef.current = new AudioContext()
+        }
+        const ctx = audioCtxRef.current
         const osc = ctx.createOscillator()
         const gain = ctx.createGain()
         osc.connect(gain)

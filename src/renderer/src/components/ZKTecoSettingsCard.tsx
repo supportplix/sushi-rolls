@@ -15,6 +15,21 @@ import {
 } from '@/lib/zkteco'
 import type { ZkTecoStatus } from '@shared/ipc'
 
+// The bridge only maps these exact IANA ids; anything else falls back to Cairo.
+const TIMEZONES = [
+  'Africa/Cairo',
+  'America/New_York',
+  'America/Chicago',
+  'America/Los_Angeles',
+  'Europe/London',
+  'Europe/Paris',
+  'Asia/Riyadh',
+  'Asia/Dubai',
+  'Asia/Kolkata',
+  'UTC'
+] as const
+const DEFAULT_TIMEZONE: (typeof TIMEZONES)[number] = 'Africa/Cairo'
+
 const idleStatus: ZkTecoStatus = {
   state: 'idle',
   deviceName: null,
@@ -37,7 +52,7 @@ export default function ZKTecoSettingsCard(): JSX.Element {
   const [busy, setBusy] = useState<string | null>(null)
   const [mode, setMode] = useState('alternating')
   const [background, setBackground] = useState('app_only')
-  const [timezone, setTimezone] = useState('Africa/Cairo')
+  const [timezone, setTimezone] = useState<string>(DEFAULT_TIMEZONE)
 
   const devices = useAsync(async () => {
     if (!canManageDevice) return [] as AttendanceDevice[]
@@ -54,7 +69,7 @@ export default function ZKTecoSettingsCard(): JSX.Element {
     if (!device) return
     setMode(device.attendance_mode)
     setBackground(device.background_mode)
-    setTimezone(device.timezone)
+    setTimezone(TIMEZONES.includes(device.timezone as (typeof TIMEZONES)[number]) ? device.timezone : DEFAULT_TIMEZONE)
   }, [device])
 
   const run = async (name: string, action: () => Promise<void>): Promise<void> => {
@@ -145,13 +160,18 @@ export default function ZKTecoSettingsCard(): JSX.Element {
             />
           </Field>
           <Field label="المنطقة الزمنية">
-            <input className="input" value={timezone} onChange={(event) => setTimezone(event.target.value)} dir="ltr" />
+            <Select
+              value={timezone}
+              onChange={setTimezone}
+              options={TIMEZONES.map((zone) => ({ value: zone, ar: zone }))}
+            />
           </Field>
           <Button
             icon={busy === 'save' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
             disabled={!device || busy !== null}
             onClick={() => void run('save', async () => {
               if (!device) return
+              if (!TIMEZONES.includes(timezone as (typeof TIMEZONES)[number])) throw new Error('INVALID_TIMEZONE')
               await updateDevice(db, device.id, {
                 attendance_mode: mode as AttendanceDevice['attendance_mode'],
                 background_mode: background as AttendanceDevice['background_mode'],

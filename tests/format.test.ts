@@ -70,6 +70,27 @@ describe('parseNum', () => {
   it('strips non numeric characters', () => {
     expect(parseNum('1,250.5 ج.م.')).toBe(1250.5)
   })
+
+  it('parses Arabic-Indic digits and Arabic separators', () => {
+    expect(parseNum('١٢٥٠٫٥')).toBe(1250.5)
+    expect(parseNum('١٢٣')).toBe(123)
+    expect(parseNum('١٬٢٣٤٫٥٦ ج.م.')).toBe(1234.56)
+  })
+
+  it('parses Extended Arabic-Indic (Persian) digits and separators', () => {
+    expect(parseNum('۱۲٫۷۵')).toBe(12.75)
+    expect(parseNum('۱٬۲۵۰٫۵')).toBe(1250.5)
+  })
+
+  it('keeps the sign when Arabic digits use the Unicode minus', () => {
+    expect(parseNum('−٥٠')).toBe(-50)
+    expect(parseNum('−۵۰٫۲۵')).toBe(-50.25)
+  })
+
+  it('does not turn a purely non numeric Arabic string into zero silently', () => {
+    expect(parseNum('علبة')).toBe(0)
+    expect(parseNum('٠')).toBe(0)
+  })
 })
 
 describe('num', () => {

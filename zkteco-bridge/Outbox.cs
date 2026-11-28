@@ -88,6 +88,52 @@ namespace SushiRolls.ZkTeco
             }
         }
 
+        /// <summary>
+        /// Persists a whole drained batch in ONE atomic file write. ReadNewAttendance
+        /// consumes the terminal log, so callers must not lose events between
+        /// per-item writes: a single write keeps the drained batch indivisible and
+        /// keeps the retry idempotent (payload hashes dedupe).
+        /// </summary>
+        public IReadOnlyList<OutboxEntry> AppendRange(IList<AttendanceEvent> attendanceEvents, string deviceSerial)
+        {
+            if (attendanceEvents == null) throw new ArgumentNullException("attendanceEvents");
+            if (attendanceEvents.Count == 0) return new OutboxEntry[0];
+            var hashes = new string[attendanceEvents.Count];
+            for (var i = 0; i < attendanceEvents.Count; i++)
+            {
+                if (attendanceEvents[i] == null) throw new ArgumentException("attendance events cannot contain null", "attendanceEvents");
+                hashes[i] = EventHash.For(attendanceEvents[i], deviceSerial);
+            }
+            lock (sync)
+            {
+                CheckDisposed();
+                return WithFileLock(() =>
+                {
+                    var entries = new List<OutboxEntry>(ReadAllCore());
+                    var known = new HashSet<string>(StringComparer.Ordinal);
+                    foreach (var entry in entries) known.Add(entry.PayloadHash);
+                    var added = new List<OutboxEntry>();
+                    for (var i = 0; i < attendanceEvents.Count; i++)
+                    {
+                        if (known.Contains(hashes[i])) continue;
+                        var entry = new OutboxEntry
+                        {
+                            EventId = Guid.NewGuid().ToString("N"),
+                            PayloadHash = hashes[i],
+                            Payload = attendanceEvents[i],
+                            CreatedAt = DateTime.UtcNow,
+                            Synced = false
+                        };
+                        entries.Add(entry);
+                        known.Add(hashes[i]);
+                        added.Add(entry);
+                    }
+                    if (added.Count > 0) WriteAtomic(OutboxJson.WriteArray(entries));
+                    return (IReadOnlyList<OutboxEntry>)added;
+                });
+            }
+        }
+
         public IReadOnlyList<OutboxEntry> ReadPending()
         {
             lock (sync)
@@ -108,21 +154,30 @@ namespace SushiRolls.ZkTeco
         public bool MarkSynced(string eventId)
         {
             if (String.IsNullOrWhiteSpace(eventId)) throw new ArgumentException("event ID is required", "eventId");
+            return MarkSyncedRange(new[] { eventId }) == 1;
+        }
+
+        /// <summary>Marks many events synced in one atomic file write.</summary>
+        public int MarkSyncedRange(IEnumerable<string> eventIds)
+        {
+            if (eventIds == null) throw new ArgumentNullException("eventIds");
+            var ids = new HashSet<string>(eventIds, StringComparer.Ordinal);
+            if (ids.Count == 0) return 0;
             lock (sync)
             {
                 CheckDisposed();
                 return WithFileLock(() =>
                 {
                     var entries = new List<OutboxEntry>(ReadAllCore());
-                    var found = false;
+                    var marked = 0;
                     foreach (var entry in entries)
                     {
-                        if (entry.EventId != eventId || entry.Synced) continue;
+                        if (entry.Synced || !ids.Contains(entry.EventId)) continue;
                         entry.Synced = true;
-                        found = true;
+                        marked++;
                     }
-                    if (found) WriteAtomic(OutboxJson.WriteArray(entries));
-                    return found;
+                    if (marked > 0) WriteAtomic(OutboxJson.WriteArray(entries));
+                    return marked;
                 });
             }
         }
@@ -238,7 +293,14 @@ namespace SushiRolls.ZkTeco
             var directory = Path.GetDirectoryName(filePath);
             foreach (var path in Directory.GetFiles(directory, Path.GetFileName(filePath) + ".*.tmp", SearchOption.TopDirectoryOnly))
             {
-                try { File.Delete(path); }
+                try
+                {
+                    // Never delete a temp file another bridge instance is still
+                    // writing; only stale leftovers from a crashed write are ours
+                    // to remove.
+                    if (DateTime.UtcNow - File.GetLastWriteTimeUtc(path) < TimeSpan.FromMinutes(10)) continue;
+                    File.Delete(path);
+                }
                 catch (IOException) { }
                 catch (UnauthorizedAccessException) { }
             }

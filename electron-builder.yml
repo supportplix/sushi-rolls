@@ -14,7 +14,9 @@ publish:
   provider: github
   owner: supportplix
   repo: sushi-rolls
-  releaseType: release
+  # Draft releases prevent an immediate fleet-wide auto-install of a bad build.
+  # Publish only after the signed artifacts and latest.yml have been inspected.
+  releaseType: draft
 win:
   target:
     - target: nsis

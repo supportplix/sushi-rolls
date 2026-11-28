@@ -152,6 +152,11 @@ export interface ZkTecoEnrollResult {
   error?: string
 }
 
+export interface ZkTecoEnrollCheckArgs {
+  commandId: string
+  accessToken: string
+}
+
 /** Result of the single-shot completion probe for a running watch enrollment. */
 export interface ZkTecoEnrollCheckResult {
   ok: boolean
@@ -180,7 +185,7 @@ export interface ZkTecoApi {
   configure: (args: ZkTecoConfigureArgs) => Promise<ZkTecoServiceResult>
   service: (args: { action: 'install' | 'start' | 'stop' | 'remove' | 'agent-install' | 'agent-remove'; accessToken: string }) => Promise<ZkTecoServiceResult>
   enroll: (args: ZkTecoEnrollArgs) => Promise<ZkTecoEnrollResult>
-  checkEnrollment: (commandId: string) => Promise<ZkTecoEnrollCheckResult>
+  checkEnrollment: (args: ZkTecoEnrollCheckArgs) => Promise<ZkTecoEnrollCheckResult>
   onStatus: (callback: (status: ZkTecoStatus) => void) => () => void
 }
 

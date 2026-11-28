@@ -18,7 +18,7 @@
 ### 1) مشروع Supabase
 
 1. أنشئ مشروعاً جديداً على [supabase.com](https://supabase.com).
-2. من **SQL Editor** شغّل ملف `supabase/schema.sql` كاملاً (يُنشئ كل الجداول والصلاحيات ودوال الأوردرات والمخزون والتقارير).
+2. لمشروع جديد شغّل: `psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f supabase/apply-migrations.sql` (يُشغّل `schema.sql` ثم كل الـ migrations بالترتيب). أو الصق في **SQL Editor** محتوى `supabase/schema.sql` ثم كل ملفات `supabase/migrations/*.sql` بالترتيب من الأقدم للأحدث. لا يكفي `schema.sql` وحده، ولا يكفي `supabase db push` وحده لأنه لا يُنشئ الأساس. **لا تُعد تشغيل `schema.sql` على قاعدة بيانات مُهيّأة** — يوجد حاجز يمنع ذلك حمايةً لإصلاحات الأمان. للتحقق من قائمة التحديثات شغّل `node scripts/check-migrations.mjs` (لا يحتاج اتصالاً بقاعدة البيانات).
 3. من **Authentication → Providers → Email**: اقفل خيار **Confirm email** (الحسابات داخلية باسم مستخدم وليس بريداً).
 4. **بعد إتمام شاشة «إعداد أول مدير»** اقفل **Allow new users to sign up** من نفس الصفحة؛ إضافة الموظفين بعدها تتم من شاشة «المستخدمين» عبر Edge Function فقط.
 5. من **Settings → API** خذ `Project URL` و`anon public key` — هما الوحيدان اللازمان للتطبيق. **لا تضع service_role داخل التطبيق إطلاقاً.**
@@ -37,8 +37,8 @@ npx supabase functions deploy admin-users
 
 ### 3) تشغيل التطبيق
 
-- **نسخة جاهزة:** ثبّت `SUSHI-ROLLS-Setup-1.0.0.exe` من مجلد `dist/`.
-- **أول تشغيل:** شاشة «ربط قاعدة البيانات» → الصق Project URL وanon key → ثم شاشة إعداد أول مدير (سوبر أدمن).
+- **نسخة جاهزة:** ثبّت `SUSHI-ROLLS-Setup-1.0.30.exe` من مجلد `dist/`.
+- **أول تشغيل:** شاشة «ربط قاعدة البيانات» → أدخل Project URL وanon public key واضغط «اختبار الاتصال وحفظ» → ثم شاشة إعداد أول مدير (سوبر أدمن). البيانات تُحفظ في `config.json` داخل مجلد بيانات التطبيق؛ بناء الإصدار يمكن أيضاً تضمينهما وقت البناء عبر متغيري `VITE_SUPABASE_URL` و`VITE_SUPABASE_ANON_KEY`.
 - **من الكود:**
 
 ```bash
@@ -69,8 +69,17 @@ npm version patch
 git push --follow-tags
 ```
 
-- الـ workflow `.github/workflows/release.yml` يبني المثبّت و`latest.yml` وينشرهم في GitHub Releases تلقائياً. يمكن تشغيله يدوياً من تبويب **Actions → Build & Release** بعد رفع نسخة جديدة.
-- ملف `.env.production` بيحتوي على Project URL وpublishable key (آمنين للنشر). ممنوع وضع `service_role` في أي ملف داخل التطبيق.
+- الـ workflow `.github/workflows/release.yml` يبني المثبّت و`latest.yml` وينشرهم في GitHub Releases تلقائياً **كنسخة مسودة (Draft)** عند دفع وسم `v*` فقط، بعد نجاح فحص الأنواع والاختبارات واختبارات Edge واختبار Migrations. التشغيل اليدوي من **Actions** يبني ويفحص بدون نشر.
+- **التوقيع إلزامي للإصدارات:** يجب ضع `CSC_LINK` و`CSC_KEY_PASSWORD` في أسرار الريبو؛ البناء بدون شهادة يفشل في CI. لا تُزَل `publisherName` من `app-update.yml` — التحقق من الناشر في electron-updater يجب أن يظل مفعّلاً. راجع المسودة و`latest.yml` قبل نشرها للعملاء.
+- ملف `.env.production` بيحتوي على Project URL وpublishable key (آمنين للنشر). ممنوع وضع `service_role` في أي ملف داخل التطبيق. لا تستخدم نفس الملف للبيئة الحقيقية والتجريبية.
+
+### قائمة تحقق الإصدار
+
+1. تأكد أن شجرة Git نظيفة (`git status`) — لا تُصدّر نسخة من تعديلات غير ملتزمة.
+2. شغّل `npm run typecheck` و`npm test` و`node scripts/check-migrations.mjs`.
+3. تأكد أن رقم `package.json` يطابق الوسم `v<version>` الذي ستدفعه.
+4. تأكد أن `CSC_LINK` و`CSC_KEY_PASSWORD` مضبوطان في أسرار GitHub، وأن `publisherName` موجود في `app-update.yml` للنسخة الموقّعة.
+5. بعد اكتمال الـ workflow، راجع المسودة والمرفقات و`latest.yml` ثم انشرها يدوياً.
 
 ## الأمان
 
@@ -97,7 +106,9 @@ src/main        عملية Electron الرئيسية (نافذة آمنة، طب
 src/preload     جسر IPC المحدود
 src/renderer    واجهة React (صفحات، مكونات، هوية بصرية، تكامل Supabase)
 src/shared      عقود IPC والمفاتيح المشتركة
-supabase        schema.sql + functions/admin-users
+supabase        schema.sql + migrations/ + functions/admin-users + functions/device-sync + tests
+zkteco-bridge   خدمة ويندوز للتواصل مع أجهزة البصمة (بروتوكول Pipe + outbox)
+scripts         فحوص البناء (منها check-migrations.mjs)
 tests           اختبارات الحسابات المالية والصلاحيات
 ```
 

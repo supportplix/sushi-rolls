@@ -21,6 +21,12 @@ namespace SushiRolls.ZkTeco
         private static bool attendancePaused;
         private static readonly object ConsoleLock = new object();
 
+        // Serializes every GetStatus→mutate→UpdateStatus sequence. The lock inside
+        // BridgePipeServer only protects the whole-object swap, so without this
+        // gate the 5s heartbeat can snapshot status before an enrollment update
+        // and write after it, reverting live enrollment progress.
+        private static readonly object StatusGate = new object();
+
         // The LX15 accepts one SDK handle and locks up when a second multi-call
         // operation interrupts an in-progress registration. Enrollment therefore
         // owns the device exclusively: the attendance poller and the command
@@ -588,13 +594,16 @@ namespace SushiRolls.ZkTeco
         {
             try
             {
-                var next = server.GetStatus();
-                next.EnrollmentCommandId = String.IsNullOrWhiteSpace(commandId) ? next.EnrollmentCommandId : commandId;
-                next.EnrollmentDeviceUserId = deviceUserId ?? "";
-                next.EnrollmentStatus = status ?? "";
-                next.EnrollmentMessage = message ?? "";
-                next.EnrollmentUpdatedAt = DateTime.UtcNow.ToString("o");
-                server.UpdateStatus(next);
+                lock (StatusGate)
+                {
+                    var next = server.GetStatus();
+                    next.EnrollmentCommandId = String.IsNullOrWhiteSpace(commandId) ? next.EnrollmentCommandId : commandId;
+                    next.EnrollmentDeviceUserId = deviceUserId ?? "";
+                    next.EnrollmentStatus = status ?? "";
+                    next.EnrollmentMessage = message ?? "";
+                    next.EnrollmentUpdatedAt = DateTime.UtcNow.ToString("o");
+                    server.UpdateStatus(next);
+                }
                 server.NotifyStatus();
             }
             catch (Exception) { }
@@ -607,11 +616,14 @@ namespace SushiRolls.ZkTeco
             try
             {
                 var info = device.ReadInfo();
-                var next = server.GetStatus();
-                next.Users = info.Users;
-                next.Fingerprints = info.Fingerprints;
-                next.Records = info.Records;
-                server.UpdateStatus(next);
+                lock (StatusGate)
+                {
+                    var next = server.GetStatus();
+                    next.Users = info.Users;
+                    next.Fingerprints = info.Fingerprints;
+                    next.Records = info.Records;
+                    server.UpdateStatus(next);
+                }
                 server.NotifyStatus();
             }
             catch (Exception) { }
@@ -703,7 +715,11 @@ namespace SushiRolls.ZkTeco
         {
             lock (PollerLock)
             {
-                if (attendancePaused || activePoller != null || Stop.IsCancellationRequested) return;
+                // BeginEnrollment flips the flag on the pipe thread before the
+                // spawned task can pause polling; checking it here too closes the
+                // window where a poller starts against a terminal an enrollment is
+                // about to seize (and then disposes underneath it).
+                if (attendancePaused || IsEnrollmentActive() || activePoller != null || Stop.IsCancellationRequested) return;
                 var noPoll = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
                     "SUSHI ROLLS", "zkteco", "nopoll.flag");
                 if (File.Exists(noPoll)) return;
@@ -928,24 +944,27 @@ namespace SushiRolls.ZkTeco
 
         private static void PublishStatus(BridgePipeServer server, string state, DeviceInfo info, string lastSyncAt, Outbox outbox, string message)
         {
-            var next = server.GetStatus();
-            next.State = state;
-            next.DeviceName = "Attendance Device";
-            next.SerialNumber = info == null ? null : info.Serial;
-            next.Firmware = info == null ? null : info.Firmware;
-            next.Transport = "usb-std";
-            next.ComPort = null;
-            next.LastSeenAt = state == "connected" ? DateTime.UtcNow.ToString("o") : null;
-            next.LastSyncAt = lastSyncAt;
-            if (info != null)
+            lock (StatusGate)
             {
-                next.Users = info.Users;
-                next.Fingerprints = info.Fingerprints;
-                next.Records = info.Records;
+                var next = server.GetStatus();
+                next.State = state;
+                next.DeviceName = "Attendance Device";
+                next.SerialNumber = info == null ? null : info.Serial;
+                next.Firmware = info == null ? null : info.Firmware;
+                next.Transport = "usb-std";
+                next.ComPort = null;
+                next.LastSeenAt = state == "connected" ? DateTime.UtcNow.ToString("o") : null;
+                next.LastSyncAt = lastSyncAt;
+                if (info != null)
+                {
+                    next.Users = info.Users;
+                    next.Fingerprints = info.Fingerprints;
+                    next.Records = info.Records;
+                }
+                next.PendingOutbox = outbox.ReadPending().Count;
+                next.Message = message;
+                server.UpdateStatus(next);
             }
-            next.PendingOutbox = outbox.ReadPending().Count;
-            next.Message = message;
-            server.UpdateStatus(next);
             server.NotifyStatus();
         }
 
@@ -1006,7 +1025,14 @@ namespace SushiRolls.ZkTeco
                                 throw new InvalidOperationException("LX15 stopped responding");
                             }
                         }
-                        EnsureAttendancePoller(device, outbox, info.Serial);
+                        // `info` is null on the first passes while an enrollment owns
+                        // the terminal; passing info.Serial would NRE and publish a
+                        // bogus device-missing status. The identity read is retried
+                        // once the enrollment ends.
+                        if (info != null)
+                        {
+                            EnsureAttendancePoller(device, outbox, info.Serial);
+                        }
 
                         string syncMessage = null;
                         var config = BridgeConfig.Load();
