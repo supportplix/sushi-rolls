@@ -46,7 +46,10 @@ jobs:
           deno-version: v2.x
 
       - name: Edge function tests
-        run: deno test --allow-all supabase/functions/device-sync/device-sync.test.ts
+        # Force Deno's own npm cache: the repo's node_modules resolves
+        # @supabase/supabase-js to a different version than the exact
+        # npm:... @2.80.0 specifier used by the Edge Function.
+        run: deno test --allow-all --node-modules-dir=none supabase/functions/device-sync/device-sync.test.ts
 
   release:
     name: Publish signed Windows release
