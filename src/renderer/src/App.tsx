@@ -20,6 +20,7 @@ import EmployeesPage from '@/pages/EmployeesPage'
 import ReportsPage from '@/pages/ReportsPage'
 import UsersPage from '@/pages/UsersPage'
 import SettingsPage from '@/pages/SettingsPage'
+import TrashPage from '@/pages/TrashPage'
 
 function Root(): JSX.Element {
   const { phase } = useAuth()
@@ -65,6 +66,7 @@ function Root(): JSX.Element {
           <Route path="/reports" element={<Guard perm="reports.view"><ReportsPage /></Guard>} />
           <Route path="/users" element={<Guard perm="users.manage"><UsersPage /></Guard>} />
           <Route path="/settings" element={<Guard perm={['settings.manage', 'backup.manage']}><SettingsPage /></Guard>} />
+          <Route path="/admin/trash" element={<Guard perm="users.manage"><TrashPage /></Guard>} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

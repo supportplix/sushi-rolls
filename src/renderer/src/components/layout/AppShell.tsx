@@ -20,6 +20,7 @@ import {
   Settings,
   ShoppingCart,
   Store,
+  Trash2,
   Users,
   UsersRound,
   Wallet,
@@ -100,6 +101,7 @@ const GROUPS: NavGroup[] = [
     items: [
       { to: '/users', label: t('nav.users'), icon: <UsersRound className="h-[18px] w-[18px]" />, perms: ['users.manage'] },
       { to: '/settings', label: t('nav.settings'), icon: <Settings className="h-[18px] w-[18px]" />, perms: ['settings.manage', 'backup.manage'] },
+      { to: '/admin/trash', label: t('trash.title'), icon: <Trash2 className="h-[18px] w-[18px]" />, perms: ['users.manage'] },
     ]
   }
 ]
