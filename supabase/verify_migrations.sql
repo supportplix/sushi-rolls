@@ -1,5 +1,5 @@
--- Read-only. Run in Supabase SQL Editor to confirm v1.0.30 database objects exist.
--- Returns one row per expected object: OK / MISSING.
+-- Read-only. Run in Supabase SQL Editor to confirm the database objects used by
+-- v1.0.30 + the optional trash feature exist. Returns OK / MISSING per object.
 
 with expected(label, present) as (
   select 'schema baseline: attendance_devices', to_regclass('public.attendance_devices') is not null
@@ -28,6 +28,14 @@ with expected(label, present) as (
   union all select 'guard_profile_update trigger', exists (
     select 1 from pg_trigger t join pg_class c on c.oid = t.tgrelid
     where c.relname = 'profiles' and t.tgname = 'trg_profile_guard' and not t.tgisinternal
+  )
+  -- Optional trash feature (superadmin_delete.sql + trash.sql)
+  union all select 'trash: deleted_rows table', to_regclass('public.deleted_rows') is not null
+  union all select 'trash: owner_delete(text,uuid)', to_regprocedure('public.owner_delete(text,uuid)') is not null
+  union all select 'trash: owner_restore(bigint)', to_regprocedure('public.owner_restore(bigint)') is not null
+  union all select 'trash: owner_delete archives', exists (
+    select 1 from pg_proc p where p.oid = to_regprocedure('public.owner_delete(text,uuid)')
+      and pg_get_functiondef(p.oid) like '%deleted_rows%'
   )
 )
 select label, case when present then 'OK' else 'MISSING' end as status

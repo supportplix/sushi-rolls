@@ -3,12 +3,12 @@ import { humanError } from './errors'
 
 /** Tables accepted by public.owner_delete(text, uuid). Keep in sync with supabase/trash.sql. */
 export const OWNER_TABLES = [
-  'user_permissions', 'suppliers', 'ingredients', 'categories', 'products',
-  'product_variants', 'product_extras', 'recipes', 'recipe_items', 'stock_movements',
+  'suppliers', 'ingredients', 'categories', 'products',
+  'product_variants', 'product_extras', 'recipes', 'recipe_items',
   'purchase_orders', 'purchase_order_items', 'customers', 'restaurant_tables',
-  'expense_categories', 'expenses', 'cash_shifts', 'cash_transactions', 'orders',
+  'expense_categories', 'expenses', 'cash_shifts', 'orders',
   'order_items', 'order_item_extras', 'payments', 'refunds', 'employees', 'attendance',
-  'backups', 'attendance_devices', 'employee_devices', 'attendance_events', 'device_commands'
+  'backups', 'employee_devices', 'attendance_events', 'device_commands'
 ] as const
 
 export type OwnerTable = (typeof OWNER_TABLES)[number]

@@ -66,7 +66,7 @@ function Root(): JSX.Element {
           <Route path="/reports" element={<Guard perm="reports.view"><ReportsPage /></Guard>} />
           <Route path="/users" element={<Guard perm="users.manage"><UsersPage /></Guard>} />
           <Route path="/settings" element={<Guard perm={['settings.manage', 'backup.manage']}><SettingsPage /></Guard>} />
-          <Route path="/admin/trash" element={<Guard perm="users.manage"><TrashPage /></Guard>} />
+          <Route path="/admin/trash" element={<Guard perm="users.manage" roles={['owner', 'super_admin']}><TrashPage /></Guard>} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

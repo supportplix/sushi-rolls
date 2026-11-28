@@ -96,7 +96,7 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
       const envUrl = import.meta.env.VITE_SUPABASE_URL as string | undefined
       const envKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
       if (envUrl && envKey) {
-        cfg = { supabaseUrl: envUrl, supabaseAnonKey: envKey, receiptWidth: 80 }
+        cfg = { supabaseUrl: envUrl, supabaseAnonKey: envKey }
       }
     }
     if (gen !== bootGen.current) return

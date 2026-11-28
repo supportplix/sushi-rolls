@@ -1,10 +1,7 @@
+/** Bootstrap coordinates only. All business settings live in Supabase `settings`. */
 export interface AppConfig {
   supabaseUrl: string
   supabaseAnonKey: string
-  printerName?: string | null
-  receiptWidth?: 58 | 80
-  language?: 'ar' | 'en'
-  rememberUsername?: string | null
 }
 
 export interface PrintReceiptArgs {

@@ -19,9 +19,10 @@ create index if not exists deleted_rows_batch_idx on public.deleted_rows (batch_
 alter table public.deleted_rows enable row level security;
 drop policy if exists deleted_rows_read on public.deleted_rows;
 create policy deleted_rows_read on public.deleted_rows for select to authenticated
-  using (public.has_perm('audit.view')
-    or exists (select 1 from public.profiles p where p.id = auth.uid()
-      and p.is_active and p.role in ('owner','super_admin')));
+  using (exists (
+    select 1 from public.profiles p
+    where p.id = auth.uid() and p.is_active and p.role in ('owner','super_admin')
+  ));
 
 create or replace function public._archive_row(
   p_batch bigint, p_table text, p_sql text, p_id uuid
@@ -35,6 +36,21 @@ begin
   ) using p_batch, p_table, auth.uid(), p_id;
 end $$;
 revoke all on function public._archive_row(bigint, text, text, uuid) from public, anon, authenticated;
+
+-- Same as _archive_row for bigserial-keyed child tables (stock_movements,
+-- cash_transactions) that cascade away with their parent.
+create or replace function public._archive_row_big(
+  p_batch bigint, p_table text, p_sql text, p_id bigint
+) returns void
+language plpgsql security definer set search_path = '' as $$
+begin
+  execute format(
+    'insert into public.deleted_rows (batch_id, table_name, row_data, deleted_by) '
+    || 'select $1, $2, to_jsonb(x), $3 from public.%I x where x.id = $4',
+    p_sql
+  ) using p_batch, p_table, auth.uid(), p_id;
+end $$;
+revoke all on function public._archive_row_big(bigint, text, text, bigint) from public, anon, authenticated;
 
 create or replace function public.owner_delete(p_table text, p_id uuid)
 returns jsonb
@@ -50,13 +66,17 @@ begin
     raise exception 'PERMISSION_DENIED' using errcode = '42501';
   end if;
 
+  -- Excluded: settings / audit_logs / login_history / user_permissions use a
+  -- non-uuid PK; stock_movements and cash_transactions are bigserial; and
+  -- attendance_devices has RESTRICT device children that must be managed by
+  -- the device flow. Those tables are cleared with reset_data.sql instead.
   if p_table is null or p_table not in (
-    'user_permissions','suppliers','ingredients','categories','products',
-    'product_variants','product_extras','recipes','recipe_items','stock_movements',
+    'suppliers','ingredients','categories','products',
+    'product_variants','product_extras','recipes','recipe_items',
     'purchase_orders','purchase_order_items','customers','restaurant_tables',
-    'expense_categories','expenses','cash_shifts','cash_transactions','orders',
+    'expense_categories','expenses','cash_shifts','orders',
     'order_items','order_item_extras','payments','refunds','employees','attendance',
-    'backups','attendance_devices','employee_devices','attendance_events','device_commands'
+    'backups','employee_devices','attendance_events','device_commands'
   ) then
     raise exception 'INVALID_TABLE:%', coalesce(p_table, 'null') using errcode = '22023';
   end if;
@@ -89,6 +109,16 @@ begin
       from public.recipe_items ri where ri.ingredient_id = p_id;
     perform public._archive_row(v_batch, 'purchase_order_items', 'purchase_order_items', pi.id)
       from public.purchase_order_items pi where pi.ingredient_id = p_id;
+    perform public._archive_row_big(v_batch, 'stock_movements', 'stock_movements', sm.id)
+      from public.stock_movements sm where sm.ingredient_id = p_id;
+  elsif p_table = 'cash_shifts' then
+    perform public._archive_row_big(v_batch, 'cash_transactions', 'cash_transactions', ct.id)
+      from public.cash_transactions ct where ct.shift_id = p_id;
+  elsif p_table = 'employees' then
+    perform public._archive_row(v_batch, 'attendance', 'attendance', at.id)
+      from public.attendance at where at.employee_id = p_id;
+    perform public._archive_row(v_batch, 'employee_devices', 'employee_devices', ed.id)
+      from public.employee_devices ed where ed.employee_id = p_id;
   elsif p_table = 'suppliers' then
     perform public._archive_row(v_batch, 'purchase_orders', 'purchase_orders', po.id)
       from public.purchase_orders po where po.supplier_id = p_id;
@@ -96,9 +126,6 @@ begin
       from public.purchase_order_items pi
       join public.purchase_orders po on po.id = pi.purchase_order_id
       where po.supplier_id = p_id;
-  elsif p_table = 'profiles' then
-    perform public._archive_row(v_batch, 'cash_transactions', 'cash_transactions', ct.id)
-      from public.cash_transactions ct where ct.user_id = p_id;
   end if;
 
   -- ON DELETE RESTRICT children must go before the parent.
@@ -109,8 +136,6 @@ begin
     delete from public.purchase_order_items
       where purchase_order_id in (select id from public.purchase_orders where supplier_id = p_id);
     delete from public.purchase_orders where supplier_id = p_id;
-  elsif p_table = 'profiles' then
-    delete from public.cash_transactions where user_id = p_id;
   end if;
 
   execute format('delete from public.%I where id = $1', p_table) using p_id;
@@ -126,6 +151,24 @@ end $$;
 revoke all on function public.owner_delete(text, uuid) from public, anon;
 grant execute on function public.owner_delete(text, uuid) to authenticated;
 
+-- Restore re-inserts explicit serial values; without this the next INSERT
+-- collides with the restored order/PO/stock/cash number.
+create or replace function public._sync_serial_sequence(p_table text, p_column text)
+returns void language plpgsql security definer set search_path = '' as $$
+declare
+  v_seq text;
+  v_max bigint;
+  v_last bigint;
+begin
+  v_seq := pg_get_serial_sequence('public.' || p_table, p_column);
+  if v_seq is null then return; end if;
+  execute format('select max(%I) from public.%I', p_column, p_table) into v_max;
+  if v_max is null then return; end if;
+  execute format('select last_value from %s', v_seq) into v_last;
+  perform setval(v_seq::regclass, greatest(v_max, coalesce(v_last, 0)), true);
+end $$;
+revoke all on function public._sync_serial_sequence(text, text) from public, anon, authenticated;
+
 create or replace function public.owner_restore(p_batch bigint)
 returns jsonb
 language plpgsql security definer set search_path = '' as $$
@@ -139,6 +182,14 @@ begin
   if v_role is null or v_role not in ('owner','super_admin') then
     raise exception 'PERMISSION_DENIED' using errcode = '42501';
   end if;
+
+  select count(*) into v_restored
+  from public.deleted_rows
+  where batch_id = p_batch and restored_at is null;
+  if v_restored = 0 then
+    raise exception 'BATCH_NOT_FOUND' using errcode = 'P0002';
+  end if;
+  v_restored := 0;
 
   for v_row in
     select table_name, row_data from public.deleted_rows
@@ -154,6 +205,11 @@ begin
   end loop;
 
   update public.deleted_rows set restored_at = now() where batch_id = p_batch;
+
+  perform public._sync_serial_sequence('orders', 'order_number');
+  perform public._sync_serial_sequence('purchase_orders', 'number');
+  perform public._sync_serial_sequence('stock_movements', 'id');
+  perform public._sync_serial_sequence('cash_transactions', 'id');
 
   insert into public.audit_logs (user_id, action, entity, entity_id, details)
   values (auth.uid(), 'owner_restore', 'deleted_rows', p_batch::text,

@@ -1,6 +1,35 @@
 import { describe, expect, it } from 'vitest'
 import { effectivePermissions, defaultPermissions, can, ALL_PERMISSIONS } from '../src/renderer/src/lib/perms'
-import { ROLE_DEFAULTS } from '../src/renderer/src/lib/constants'
+import {
+  ROLE_DEFAULTS,
+  PERMISSIONS,
+  ESSENTIAL_PERMISSION_KEYS,
+  SENSITIVE_PERMISSION_KEYS,
+  assignableRoles,
+  permissionTier
+} from '../src/renderer/src/lib/constants'
+
+describe('permission curation (presentation only)', () => {
+  it('keeps all 31 keys and never loses a permission from the catalog', () => {
+    expect(PERMISSIONS).toHaveLength(31)
+    expect(ESSENTIAL_PERMISSION_KEYS.size).toBe(12)
+    expect(SENSITIVE_PERMISSION_KEYS.size).toBe(6)
+    for (const p of PERMISSIONS) {
+      expect(['essential', 'operational', 'sensitive']).toContain(permissionTier(p.key))
+    }
+    expect(PERMISSIONS.filter((p) => ESSENTIAL_PERMISSION_KEYS.has(p.key))).toHaveLength(12)
+    expect(PERMISSIONS.filter((p) => SENSITIVE_PERMISSION_KEYS.has(p.key))).toHaveLength(6)
+  })
+
+  it('filters assignable roles by caller rank', () => {
+    const cashier = assignableRoles('cashier')
+    expect(cashier).toContain('waiter')
+    expect(cashier).not.toContain('super_admin')
+    const owner = assignableRoles('owner')
+    expect(owner).toContain('super_admin')
+    expect(owner).toHaveLength(9)
+  })
+})
 
 describe('role permissions', () => {
   it('gives owners operational and administrative permissions except device controls', () => {

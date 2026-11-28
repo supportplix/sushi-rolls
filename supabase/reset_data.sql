@@ -7,6 +7,7 @@
 begin;
 
 truncate table
+  public.deleted_rows,
   public.attendance_events,
   public.device_commands,
   public.employee_devices,
@@ -42,7 +43,7 @@ truncate table
   public.settings
   restart identity cascade;
 
-select setval('public.order_number_seq', 1000, false);
+select setval('public.order_number_seq', 1000, true);
 
 insert into public.settings (key, value) values
   ('restaurant', '{"name":"SUSHI ROLLS","phone":"","address":"","logo":""}'::jsonb),

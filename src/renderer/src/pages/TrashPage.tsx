@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Loader2, RefreshCw, RotateCcw, Trash2 } from 'lucide-react'
 import { useAuth, useDb } from '@/lib/auth'
-import { humanError } from '@/lib/errors'
+import { errorCode, humanError } from '@/lib/errors'
 import { t } from '@/i18n'
 import { Badge, Button, PageHeader, Select, TableWrap } from '@/components/ui/primitives'
 import { ConfirmDialog } from '@/components/ui/dialog'
@@ -36,12 +36,14 @@ export default function TrashPage(): JSX.Element {
   const [batches, setBatches] = useState<DeletedBatch[]>([])
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [notConfigured, setNotConfigured] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<OwnerRow | null>(null)
   const [restoreTarget, setRestoreTarget] = useState<DeletedBatch | null>(null)
 
   const load = useCallback(async (): Promise<void> => {
     if (!isOwner) return
     setLoading(true)
+    setNotConfigured(false)
     try {
       const [nextRows, nextBatches] = await Promise.all([
         fetchOwnerRows(db, table),
@@ -50,7 +52,11 @@ export default function TrashPage(): JSX.Element {
       setRows(nextRows)
       setBatches(nextBatches)
     } catch (err) {
-      toast.error(humanError(err))
+      if (errorCode(err) === 'PGRST202' || /does not exist|not found/i.test(String(err))) {
+        setNotConfigured(true)
+      } else {
+        toast.error(humanError(err))
+      }
     } finally {
       setLoading(false)
     }
@@ -107,6 +113,12 @@ export default function TrashPage(): JSX.Element {
   return (
     <div className="space-y-4">
       <PageHeader title={t('trash.title')} subtitle={t('trash.subtitle')} />
+
+      {notConfigured && (
+        <div className="rounded-xl border border-brand-red/30 bg-brand-red/10 px-4 py-3 text-[11px] font-semibold text-brand-redSoft">
+          {t('trash.notConfigured')}
+        </div>
+      )}
 
       <div className="card flex flex-wrap items-center gap-3 p-4">
         <div className="w-64">

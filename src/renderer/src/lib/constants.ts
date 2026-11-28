@@ -120,6 +120,45 @@ export const PERMISSIONS: { key: string; ar: string; en: string; group: string }
   { key: 'audit.view', ar: 'عرض سجل النشاط', en: 'View audit log', group: 'admin' }
 ]
 
+// Presentation tiers only — the full 31-key catalog stays intact so role
+// defaults and DB parity are untouched. These decide which controls a user
+// sees when customising permissions; hidden keys remain server-enforced.
+export const ESSENTIAL_PERMISSION_KEYS = new Set([
+  'dashboard.view', 'pos.use', 'orders.view', 'orders.cancel', 'tables.manage',
+  'kds.use', 'menu.view', 'menu.manage', 'inventory.view', 'customers.view',
+  'customers.manage', 'cash.manage'
+])
+
+export const SENSITIVE_PERMISSION_KEYS = new Set([
+  'orders.refund', 'users.manage', 'settings.manage', 'device.manage',
+  'backup.manage', 'audit.view'
+])
+
+export function permissionTier(key: string): 'essential' | 'operational' | 'sensitive' {
+  if (ESSENTIAL_PERMISSION_KEYS.has(key)) return 'essential'
+  if (SENSITIVE_PERMISSION_KEYS.has(key)) return 'sensitive'
+  return 'operational'
+}
+
+// Mirrors ROLE_RANK in admin-users/index.ts and _role_rank() in the DB.
+// UI filtering only; the server remains authoritative.
+export const ROLE_RANK: Record<string, number> = {
+  super_admin: 100,
+  owner: 100,
+  general_manager: 70,
+  branch_manager: 60,
+  inventory_manager: 40,
+  accountant: 40,
+  cashier: 30,
+  waiter: 20,
+  kitchen: 20
+}
+
+export function assignableRoles(callerRole: string | undefined): string[] {
+  const rank = callerRole ? (ROLE_RANK[callerRole] ?? -1) : -1
+  return ROLES.map((r) => r.value).filter((role) => (ROLE_RANK[role] ?? -1) <= rank)
+}
+
 const ALL = PERMISSIONS.map((p) => p.key)
 
 export const ROLE_DEFAULTS: Record<Role, string[]> = {

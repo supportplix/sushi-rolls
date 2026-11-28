@@ -29,15 +29,16 @@ begin
   end if;
 
   -- Whitelist prevents arbitrary SQL /system-table access through p_table.
-  -- Excluded: settings (key text PK), audit_logs / login_history (bigserial PK),
-  -- because this RPC takes a uuid. Those are best cleared with reset_data.sql.
+  -- Excluded: settings/audit_logs/login_history/user_permissions (non-uuid PK),
+  -- stock_movements and cash_transactions (bigserial), and attendance_devices
+  -- (RESTRICT device children belong to the device flow). See reset_data.sql.
   if p_table is null or p_table not in (
-    'user_permissions','suppliers','ingredients','categories','products',
-    'product_variants','product_extras','recipes','recipe_items','stock_movements',
+    'suppliers','ingredients','categories','products',
+    'product_variants','product_extras','recipes','recipe_items',
     'purchase_orders','purchase_order_items','customers','restaurant_tables',
-    'expense_categories','expenses','cash_shifts','cash_transactions','orders',
+    'expense_categories','expenses','cash_shifts','orders',
     'order_items','order_item_extras','payments','refunds','employees','attendance',
-    'backups','attendance_devices','employee_devices','attendance_events','device_commands'
+    'backups','employee_devices','attendance_events','device_commands'
   ) then
     raise exception 'INVALID_TABLE:%', coalesce(p_table, 'null') using errcode = '22023';
   end if;
@@ -51,9 +52,6 @@ begin
     delete from public.purchase_order_items
       where purchase_order_id in (select id from public.purchase_orders where supplier_id = p_id);
     delete from public.purchase_orders where supplier_id = p_id;
-  elsif p_table = 'profiles' then
-    -- cash_transactions.user_id is ON DELETE RESTRICT.
-    delete from public.cash_transactions where user_id = p_id;
   end if;
 
   execute format('delete from public.%I where id = $1', p_table) using p_id;

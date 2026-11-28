@@ -43,6 +43,7 @@ interface NavItem {
   label: string
   icon: JSX.Element
   perms: string[]
+  roles?: string[]
 }
 
 interface NavGroup {
@@ -101,7 +102,7 @@ const GROUPS: NavGroup[] = [
     items: [
       { to: '/users', label: t('nav.users'), icon: <UsersRound className="h-[18px] w-[18px]" />, perms: ['users.manage'] },
       { to: '/settings', label: t('nav.settings'), icon: <Settings className="h-[18px] w-[18px]" />, perms: ['settings.manage', 'backup.manage'] },
-      { to: '/admin/trash', label: t('trash.title'), icon: <Trash2 className="h-[18px] w-[18px]" />, perms: ['users.manage'] },
+      { to: '/admin/trash', label: t('trash.title'), icon: <Trash2 className="h-[18px] w-[18px]" />, perms: ['users.manage'], roles: ['owner', 'super_admin'] },
     ]
   }
 ]
@@ -166,7 +167,9 @@ export function AppShell(): JSX.Element {
 
   const visibleGroups = GROUPS.map((g) => ({
     ...g,
-    items: g.items.filter((item) => item.perms.some((p) => can(p)))
+    items: g.items.filter((item) =>
+      item.perms.some((p) => can(p)) && (!item.roles || (profile?.role != null && item.roles.includes(profile.role)))
+    )
   })).filter((g) => g.items.length > 0)
 
   return (
@@ -327,9 +330,19 @@ export function AppShell(): JSX.Element {
   )
 }
 
-export function Guard({ perm, children }: { perm: string | string[]; children: JSX.Element }): JSX.Element {
-  const { can } = useAuth()
-  const allowed = Array.isArray(perm) ? perm.some((p) => can(p)) : can(perm)
+export function Guard({
+  perm,
+  roles,
+  children
+}: {
+  perm: string | string[]
+  roles?: string[]
+  children: JSX.Element
+}): JSX.Element {
+  const { can, profile } = useAuth()
+  const permOk = Array.isArray(perm) ? perm.some((p) => can(p)) : can(perm)
+  const roleOk = !roles || (profile?.role != null && roles.includes(profile.role))
+  const allowed = permOk && roleOk
   if (!allowed) {
     return (
       <div className="grid h-64 place-items-center">

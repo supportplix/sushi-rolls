@@ -18,7 +18,7 @@ import { humanError, invokeError } from '@/lib/errors'
 import { fmtDateTime, num } from '@/lib/format'
 import type { LoginHistory, Profile } from '@/lib/types'
 import { t } from '@/i18n'
-import { PERMISSIONS, ROLES, labelOf } from '@/lib/constants'
+import { assignableRoles, ESSENTIAL_PERMISSION_KEYS, PERMISSIONS, ROLES, labelOf } from '@/lib/constants'
 import { defaultPermissions } from '@/lib/perms'
 import type { Role } from '@/lib/types'
 import { cn } from '@/lib/cn'
@@ -54,6 +54,7 @@ export default function UsersPage(): JSX.Element {
   const [deleteUser, setDeleteUser] = useState<Profile | null>(null)
   const [toggleTarget, setToggleTarget] = useState<Profile | null>(null)
   const [loadingPerms, setLoadingPerms] = useState(false)
+  const [showAdvancedPerms, setShowAdvancedPerms] = useState(false)
 
   const users = useAsync(async () => {
     const { data, error } = await db.from('profiles').select('*').order('created_at')
@@ -197,6 +198,18 @@ export default function UsersPage(): JSX.Element {
   const roleDefaults = useMemo(
     () => (permUser ? defaultPermissions(permUser.role) : new Set<string>()),
     [permUser]
+  )
+
+  // Only offer roles the caller can actually assign; the server remains authoritative.
+  const allowedRoleValues = useMemo(() => {
+    const values = assignableRoles(me?.role)
+    return values.includes(form.role) ? values : [form.role, ...values]
+  }, [me?.role, form.role])
+
+  // Curated view of the 31-key catalog: 12 essential by default, 19 on demand.
+  const visiblePermissions = useMemo(
+    () => (showAdvancedPerms ? PERMISSIONS : PERMISSIONS.filter((p) => ESSENTIAL_PERMISSION_KEYS.has(p.key))),
+    [showAdvancedPerms]
   )
 
   return (
@@ -357,7 +370,7 @@ export default function UsersPage(): JSX.Element {
             <Select
               value={form.role}
               onChange={(v) => setForm({ ...form, role: v })}
-              options={ROLES.map((r) => ({ value: r.value, ar: r.ar }))}
+              options={ROLES.filter((r) => allowedRoleValues.includes(r.value)).map((r) => ({ value: r.value, ar: r.ar }))}
             />
           </Field>
           <Field label={t('users.password')} hint={form.id ? 'اتركها فاضية لو مش هتتغير' : undefined}>
@@ -397,13 +410,20 @@ export default function UsersPage(): JSX.Element {
           <PageLoader />
         ) : (
           <div className="space-y-4">
-            {Array.from(new Set(PERMISSIONS.map((p) => p.group))).map((group) => (
+            <button
+              type="button"
+              onClick={() => setShowAdvancedPerms((v) => !v)}
+              className="w-full rounded-lg border border-line bg-white/[0.02] px-3 py-2 text-right text-[11px] font-bold text-txt-dim transition hover:bg-white/[0.05]"
+            >
+              {showAdvancedPerms ? t('users.hideAdvanced') : t('users.showAdvanced')}
+            </button>
+            {Array.from(new Set(visiblePermissions.map((p) => p.group))).map((group) => (
               <div key={group}>
                 <div className="mb-1.5 text-[10px] font-black uppercase tracking-wider text-txt-faint">
                   {t(`users.permGroup.${group}`)}
                 </div>
                 <div className="space-y-1">
-                  {PERMISSIONS.filter((p) => p.group === group).map((p) => {
+                  {visiblePermissions.filter((p) => p.group === group).map((p) => {
                     const state = permState[p.key] ?? 'default'
                     const isDefaultAllowed = roleDefaults.has(p.key)
                     return (

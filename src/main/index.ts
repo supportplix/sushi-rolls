@@ -40,13 +40,12 @@ const zktecoBridge = new ZkTecoBridgeManager((status) => {
   if (win && !win.isDestroyed()) win.webContents.send('zkteco:status', status)
 })
 
+// Bootstrap coordinates only. Printer/receipt/session/language settings live in
+// the Supabase `settings` table; keeping dead copies here created a false
+// second source of truth.
 const configSchema = z.object({
   supabaseUrl: z.string().max(300),
-  supabaseAnonKey: z.string().max(4000),
-  printerName: z.string().max(300).nullable().optional(),
-  receiptWidth: z.union([z.literal(58), z.literal(80)]).optional(),
-  language: z.enum(['ar', 'en']).optional(),
-  rememberUsername: z.string().max(120).nullable().optional()
+  supabaseAnonKey: z.string().max(4000)
 })
 
 const printArgsSchema = z.object({
