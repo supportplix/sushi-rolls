@@ -18,7 +18,10 @@
 ### 1) مشروع Supabase
 
 1. أنشئ مشروعاً جديداً على [supabase.com](https://supabase.com).
-2. لمشروع جديد شغّل: `psql "$SUPABASE_DB_URL" -v ON_ERROR_STOP=1 -f supabase/apply-migrations.sql` (يُشغّل `schema.sql` ثم كل الـ migrations بالترتيب). أو الصق في **SQL Editor** محتوى `supabase/schema.sql` ثم كل ملفات `supabase/migrations/*.sql` بالترتيب من الأقدم للأحدث. لا يكفي `schema.sql` وحده، ولا يكفي `supabase db push` وحده لأنه لا يُنشئ الأساس. **لا تُعد تشغيل `schema.sql` على قاعدة بيانات مُهيّأة** — يوجد حاجز يمنع ذلك حمايةً لإصلاحات الأمان. للتحقق من قائمة التحديثات شغّل `node scripts/check-migrations.mjs` (لا يحتاج اتصالاً بقاعدة البيانات).
+2. **لمشروع جديد** — إحدى طريقتين:
+   - **من Supabase Dashboard (بدون تثبيت):** افتح **SQL Editor** وشغّل كل ملف على حدة بالترتيب: `supabase/schema.sql` ثم كل ملفات `supabase/migrations/*.sql` من الأقدم للأحدث (9 ملفات). لا تستخدم `apply-migrations.sql` هنا لأنه يستخدم `\i` الذي لا يدعمه SQL Editor.
+   - **من PowerShell في مجلد المشروع** (بعد تثبيت PostgreSQL client): `psql "postgresql://postgres:[PASSWORD]@db:[PROJECT-REF].supabase.co:5432/postgres" -v ON_ERROR_STOP=1 -f supabase/apply-migrations.sql` — بدّل الرابط Connection string من **Project Settings → Database → Connection string → Direct connection**. لاحظ أن صيغة `$SUPABASE_DB_URL` المذكورة أعلاه هي لـ bash؛ في PowerShell استخدم `$env:SUPABASE_DB_URL` أو ضع الرابط مباشرة كما في المثال.
+   - **لقاعدة بيانات موجودة بالفعل:** شغّل الـ 8 ملفات في `supabase/migrations/` بالترتيب فقط — **لا تُعد تشغيل `schema.sql`** (يوجد حاجز يمنع ذلك حمايةً لإصلاحات الأمان). لا يكفي `schema.sql` وحده، ولا يكفي `supabase db push` وحده لأنه لا يُنشئ الأساس. للتحقق من قائمة التحديثات شغّل `node scripts/check-migrations.mjs`.
 3. من **Authentication → Providers → Email**: اقفل خيار **Confirm email** (الحسابات داخلية باسم مستخدم وليس بريداً).
 4. **بعد إتمام شاشة «إعداد أول مدير»** اقفل **Allow new users to sign up** من نفس الصفحة؛ إضافة الموظفين بعدها تتم من شاشة «المستخدمين» عبر Edge Function فقط.
 5. من **Settings → API** خذ `Project URL` و`anon public key` — هما الوحيدان اللازمان للتطبيق. **لا تضع service_role داخل التطبيق إطلاقاً.**
