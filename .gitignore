@@ -17,3 +17,4 @@ supabase/.branches/
 # Local agent tooling and the working-copy audit report are not release artifacts.
 .ruv-swarm/
 AUDIT_REPORT.md
+deno.lock
