@@ -164,6 +164,9 @@ export default function OrdersPage(): JSX.Element {
 
   const paidTotal = detail ? detail.payments.reduce((s, p) => s + Number(p.amount), 0) : 0
   const remaining = detail ? Number(detail.order.total) - paidTotal : 0
+  // A zero payment is only valid for a genuinely zero-total order. A paid-up
+  // positive-total order must not offer a pay action that the RPC rejects.
+  const alreadyPaid = detail ? Number(detail.order.total) > 0 && remaining <= 0 : false
 
   const actions = useMemo(() => {
     if (!detail) return []
@@ -197,7 +200,7 @@ export default function OrdersPage(): JSX.Element {
           setPayRef('')
           setPayOpen(true)
         },
-        disabled: !can('pos.use') || o.status === 'cancelled' || o.status === 'completed'
+        disabled: !can('pos.use') || o.status === 'cancelled' || o.status === 'completed' || alreadyPaid
       },
       {
         label: t('orders.refund'),
@@ -483,9 +486,9 @@ export default function OrdersPage(): JSX.Element {
           <>
             <Button variant="ghost" onClick={() => setPayOpen(false)}>{t('common.cancel')}</Button>
             <Button
-              disabled={busy || !canSubmitPayment(remaining, payAmount)}
+              disabled={busy || alreadyPaid || !canSubmitPayment(remaining, payAmount)}
               onClick={async () => {
-                if (!detail || !canSubmitPayment(remaining, payAmount)) return
+                if (!detail || alreadyPaid || !canSubmitPayment(remaining, payAmount)) return
                 setBusy(true)
                 try {
                   const { error } = await db.rpc('pay_order', {
